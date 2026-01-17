@@ -1,0 +1,31 @@
+# Gemini API (new Gen AI SDK)
+google-genai>=1.0.0
+
+# FastAPI stack
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# HTTP client (for external APIs)
+httpx>=0.27.0
+
+# Async support
+aiofiles>=24.1.0
+
+# Database (Railway PostgreSQL)
+asyncpg>=0.30.0
+sqlalchemy[asyncio]>=2.0.0
+
+# Redis (Railway Redis)
+redis>=5.0.0
+
+# Structured logging
+structlog>=24.1.0
+
+# Development
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

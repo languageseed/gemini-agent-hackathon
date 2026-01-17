@@ -1,0 +1,50 @@
+# Environment files (NEVER commit these!)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local development
+*.sqlite
+*.db
+
+# Node (if using frontend)
+node_modules/
+.next/
+.vercel/
