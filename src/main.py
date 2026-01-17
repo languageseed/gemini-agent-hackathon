@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional, List
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -23,6 +23,45 @@ import structlog
 
 # Load environment variables
 load_dotenv()
+
+
+# ============================================================
+# SECURITY - API Key Protection
+# ============================================================
+
+def get_api_key() -> Optional[str]:
+    """Get the API key from environment. None = open access."""
+    return os.environ.get("API_SECRET_KEY")
+
+
+async def verify_api_key(request: Request):
+    """
+    Verify API key if API_SECRET_KEY is set.
+    
+    - If API_SECRET_KEY is not set: API is open (demo mode)
+    - If API_SECRET_KEY is set: requires X-API-Key header
+    - Health and root endpoints are always open
+    """
+    api_key = get_api_key()
+    
+    # If no API key configured, allow all requests (demo mode)
+    if not api_key:
+        return
+    
+    # Check for API key in header
+    provided_key = request.headers.get("X-API-Key")
+    
+    if not provided_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing X-API-Key header"
+        )
+    
+    if provided_key != api_key:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key"
+        )
 
 # Configure logging
 structlog.configure(
@@ -240,10 +279,11 @@ async def health():
     return {
         "status": "healthy",
         "model": get_model_name(),
+        "secured": get_api_key() is not None,
     }
 
 
-@app.post("/generate", response_model=GenerateResponse)
+@app.post("/generate", response_model=GenerateResponse, dependencies=[Depends(verify_api_key)])
 async def generate(request: GenerateRequest):
     """Generate content with Gemini."""
     try:
@@ -273,7 +313,7 @@ async def generate(request: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/chat", response_model=GenerateResponse)
+@app.post("/chat", response_model=GenerateResponse, dependencies=[Depends(verify_api_key)])
 async def chat(request: ChatRequest):
     """Multi-turn chat with Gemini."""
     try:
@@ -311,7 +351,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/agent", response_model=AgentResponse)
+@app.post("/agent", response_model=AgentResponse, dependencies=[Depends(verify_api_key)])
 async def agent(request: AgentRequest):
     """
     Run the agent with tool calling.
