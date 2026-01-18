@@ -364,6 +364,159 @@ async def health():
     }
 
 
+# ============================================================
+# DIAGNOSTICS - Real telemetry for observability
+# ============================================================
+
+# In-memory metrics (resets on deploy)
+_metrics = {
+    "requests": {"total": 0, "success": 0, "errors": 0},
+    "gemini_calls": {"total": 0, "success": 0, "errors": 0, "tokens_in": 0, "tokens_out": 0},
+    "e2b_calls": {"total": 0, "success": 0, "errors": 0},
+    "analyses": {"total": 0, "verified": 0, "issues_found": 0},
+    "last_error": None,
+    "last_request": None,
+    "startup_time": None,
+}
+
+def record_metric(category: str, metric: str, value: int = 1):
+    """Record a metric increment."""
+    if category in _metrics and metric in _metrics[category]:
+        _metrics[category][metric] += value
+
+def record_error(error: str):
+    """Record the last error."""
+    import datetime
+    _metrics["last_error"] = {
+        "message": str(error)[:500],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+def record_request():
+    """Record a request."""
+    import datetime
+    _metrics["requests"]["total"] += 1
+    _metrics["last_request"] = datetime.datetime.utcnow().isoformat()
+
+
+@app.get("/diagnostics")
+async def diagnostics():
+    """
+    Comprehensive diagnostics endpoint - tests all components.
+    Returns detailed health status for debugging.
+    """
+    import datetime
+    import time
+    
+    results = {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "version": "0.4.0",
+        "checks": {},
+        "metrics": _metrics,
+    }
+    
+    # 1. Check Gemini API connectivity
+    gemini_status = {"status": "unknown", "latency_ms": None, "error": None}
+    try:
+        client = get_gemini_client()
+        start = time.time()
+        response = client.models.generate_content(
+            model=get_model_name(),
+            contents="Say 'OK' and nothing else.",
+        )
+        latency = (time.time() - start) * 1000
+        gemini_status = {
+            "status": "ok",
+            "latency_ms": round(latency, 2),
+            "response": response.text[:50] if response.text else None,
+            "model": get_model_name(),
+        }
+        _metrics["gemini_calls"]["total"] += 1
+        _metrics["gemini_calls"]["success"] += 1
+    except Exception as e:
+        gemini_status = {"status": "error", "error": str(e)[:200]}
+        _metrics["gemini_calls"]["total"] += 1
+        _metrics["gemini_calls"]["errors"] += 1
+        record_error(f"Gemini: {e}")
+    
+    results["checks"]["gemini_api"] = gemini_status
+    
+    # 2. Check E2B sandbox connectivity
+    e2b_status = {"status": "unknown", "latency_ms": None, "error": None}
+    try:
+        e2b_key = os.environ.get("E2B_API_KEY")
+        if not e2b_key:
+            e2b_status = {"status": "not_configured", "error": "E2B_API_KEY not set"}
+        else:
+            try:
+                from e2b_code_interpreter import Sandbox
+                start = time.time()
+                sbx = Sandbox(api_key=e2b_key, timeout=10)
+                result = sbx.run_code("print('OK')")
+                sbx.kill()
+                latency = (time.time() - start) * 1000
+                e2b_status = {
+                    "status": "ok",
+                    "latency_ms": round(latency, 2),
+                    "output": result.logs.stdout[:50] if result.logs.stdout else None,
+                }
+                _metrics["e2b_calls"]["total"] += 1
+                _metrics["e2b_calls"]["success"] += 1
+            except ImportError:
+                e2b_status = {"status": "not_installed", "error": "e2b_code_interpreter not installed"}
+    except Exception as e:
+        e2b_status = {"status": "error", "error": str(e)[:200]}
+        _metrics["e2b_calls"]["total"] += 1
+        _metrics["e2b_calls"]["errors"] += 1
+        record_error(f"E2B: {e}")
+    
+    results["checks"]["e2b_sandbox"] = e2b_status
+    
+    # 3. Check Redis/session store
+    session_status = {"status": "unknown", "backend": None, "error": None}
+    try:
+        store = get_session_store()
+        session_status = {
+            "status": "ok",
+            "backend": "redis" if store._redis else "memory",
+            "sessions_count": len(await store.list_sessions()) if hasattr(store, 'list_sessions') else "unknown",
+        }
+    except Exception as e:
+        session_status = {"status": "error", "error": str(e)[:200]}
+    
+    results["checks"]["session_store"] = session_status
+    
+    # 4. Environment check
+    env_status = {
+        "gemini_api_key": "set" if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") else "missing",
+        "e2b_api_key": "set" if os.environ.get("E2B_API_KEY") else "missing",
+        "api_secret_key": "set" if os.environ.get("API_SECRET_KEY") else "missing (open access)",
+        "redis_url": "set" if os.environ.get("REDIS_URL") else "missing (using memory)",
+    }
+    results["checks"]["environment"] = env_status
+    
+    # Overall status
+    all_ok = (
+        gemini_status["status"] == "ok" and
+        (e2b_status["status"] in ["ok", "not_configured", "not_installed"]) and
+        session_status["status"] == "ok"
+    )
+    results["overall"] = "healthy" if all_ok else "degraded"
+    
+    return results
+
+
+@app.get("/diagnostics/quick")
+async def diagnostics_quick():
+    """Quick diagnostics - just returns cached metrics without running tests."""
+    import datetime
+    return {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "metrics": _metrics,
+        "version": "0.4.0",
+    }
+
+
 @app.post("/generate", response_model=GenerateResponse, dependencies=[Depends(verify_api_key)])
 async def generate(request: GenerateRequest):
     """Generate content with Gemini."""
