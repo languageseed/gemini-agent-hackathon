@@ -191,7 +191,8 @@ CORS_ORIGINS_DEFAULT = [
     "http://localhost:3000",      # Alternative dev
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
-    "https://gemini-frontend.vercel.app",  # Production frontend
+    "https://gemini-frontend-murex.vercel.app",  # Production frontend
+    "https://gemini-frontend.vercel.app",        # Alternative Vercel URL
 ]
 
 cors_origins_env = os.environ.get("ALLOWED_ORIGINS", "")
