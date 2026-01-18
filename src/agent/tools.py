@@ -348,17 +348,41 @@ The sandbox has numpy, pandas, matplotlib, requests pre-installed."""
         return ToolResult(output=output, success=success)
 
 
+# Sandbox directory for file operations
+import tempfile
+SANDBOX_DIR = os.path.join(tempfile.gettempdir(), "gemini-agent-sandbox")
+
+
+def _get_sandboxed_path(path: str) -> str:
+    """
+    Ensure path is within sandbox directory.
+    Prevents path traversal attacks.
+    """
+    # Create sandbox if it doesn't exist
+    os.makedirs(SANDBOX_DIR, exist_ok=True)
+    
+    # Normalize and join with sandbox
+    safe_path = os.path.normpath(path).lstrip(os.sep)
+    full_path = os.path.join(SANDBOX_DIR, safe_path)
+    
+    # Verify it's still within sandbox (prevent ../ attacks)
+    if not os.path.abspath(full_path).startswith(os.path.abspath(SANDBOX_DIR)):
+        raise ValueError(f"Path escapes sandbox: {path}")
+    
+    return full_path
+
+
 class ReadFileTool(Tool):
-    """Read file contents."""
+    """Read file contents from sandbox."""
     
     name = "read_file"
-    description = "Read the contents of a file"
+    description = "Read the contents of a file (sandboxed to temp directory)"
     parameters = {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file to read"
+                "description": "Path to the file to read (relative to sandbox)"
             }
         },
         "required": ["path"]
@@ -366,25 +390,36 @@ class ReadFileTool(Tool):
     
     async def execute(self, arguments: dict) -> ToolResult:
         path = arguments.get("path", "")
+        
+        # Check if file tools are enabled
+        if os.environ.get("DISABLE_FILE_TOOLS", "false").lower() == "true":
+            return ToolResult(
+                output="File tools are disabled in this environment",
+                success=False
+            )
+        
         try:
-            with open(path, 'r') as f:
+            safe_path = _get_sandboxed_path(path)
+            with open(safe_path, 'r') as f:
                 content = f.read()
             return ToolResult(output=content[:10000])  # Limit size
+        except ValueError as e:
+            return ToolResult(output=f"Security error: {e}", success=False)
         except Exception as e:
             return ToolResult(output=f"Error reading file: {e}", success=False)
 
 
 class WriteFileTool(Tool):
-    """Write content to a file."""
+    """Write content to a file in sandbox."""
     
     name = "write_file"
-    description = "Write content to a file"
+    description = "Write content to a file (sandboxed to temp directory)"
     parameters = {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file to write"
+                "description": "Path to the file to write (relative to sandbox)"
             },
             "content": {
                 "type": "string",
@@ -397,10 +432,23 @@ class WriteFileTool(Tool):
     async def execute(self, arguments: dict) -> ToolResult:
         path = arguments.get("path", "")
         content = arguments.get("content", "")
+        
+        # Check if file tools are enabled
+        if os.environ.get("DISABLE_FILE_TOOLS", "false").lower() == "true":
+            return ToolResult(
+                output="File tools are disabled in this environment",
+                success=False
+            )
+        
         try:
-            with open(path, 'w') as f:
+            safe_path = _get_sandboxed_path(path)
+            # Create parent directories if needed
+            os.makedirs(os.path.dirname(safe_path), exist_ok=True)
+            with open(safe_path, 'w') as f:
                 f.write(content)
-            return ToolResult(output=f"Successfully wrote {len(content)} bytes to {path}")
+            return ToolResult(output=f"Successfully wrote {len(content)} bytes to sandbox/{path}")
+        except ValueError as e:
+            return ToolResult(output=f"Security error: {e}", success=False)
         except Exception as e:
             return ToolResult(output=f"Error writing file: {e}", success=False)
 

@@ -45,6 +45,13 @@ class VerificationStatus(str, Enum):
     ERROR = "error"            # Test execution failed
 
 
+class VerificationMethod(str, Enum):
+    """How the verification was performed - important for trust calibration."""
+    NONE = "none"                    # Not verified
+    SNIPPET_ISOLATED = "snippet"     # Code snippet tested in isolation (current method)
+    REPO_INTEGRATED = "repo"         # Full repo mounted and tested (not yet implemented)
+
+
 @dataclass
 class Issue:
     """A detected issue in the codebase."""
@@ -61,6 +68,7 @@ class Issue:
     
     # Verification fields
     verification_status: VerificationStatus = VerificationStatus.PENDING
+    verification_method: str = "none"  # none, snippet, repo
     test_code: Optional[str] = None
     test_output: Optional[str] = None
     test_error: Optional[str] = None
@@ -84,6 +92,7 @@ class Issue:
             "recommendation": self.recommendation,
             "recommended_code": self.recommended_code,
             "verification_status": self.verification_status.value,
+            "verification_method": self.verification_method,  # snippet or repo
             "test_code": self.test_code,
             "test_output": self.test_output,
             "test_error": self.test_error,
@@ -499,15 +508,20 @@ CODEBASE:
             issue.test_output = result.output
             issue.test_error = result.error_message
             
+            # All verification uses snippet-isolated method (code embedded in test)
+            # This is NOT the same as running against the full repo
+            issue.verification_method = "snippet"
+            
             if result.is_verified:
-                # Test failed due to assertion = bug is VERIFIED
+                # Test failed due to assertion = bug is VERIFIED (snippet-level)
                 issue.verification_status = VerificationStatus.VERIFIED
                 emit(EventType.TOOL_RESULT, {
                     "name": "verify_issue",
                     "issue_id": issue.id,
                     "status": "verified",
+                    "method": "snippet",  # Be explicit about verification method
                     "error_type": result.error_type,
-                    "message": "Bug confirmed - assertion failed as expected",
+                    "message": "Bug confirmed (snippet-isolated test)",
                 })
             elif result.is_unverified:
                 # Test passed = bug may be false positive
@@ -516,15 +530,18 @@ CODEBASE:
                     "name": "verify_issue",
                     "issue_id": issue.id,
                     "status": "unverified",
+                    "method": "snippet",
                     "message": "Test passed - may be false positive",
                 })
             else:
                 # Environmental error - cannot determine verification
                 issue.verification_status = VerificationStatus.ERROR
+                issue.verification_method = "none"  # Failed to verify
                 emit(EventType.TOOL_RESULT, {
                     "name": "verify_issue",
                     "issue_id": issue.id,
                     "status": "error",
+                    "method": "none",
                     "error_type": result.error_type,
                     "message": f"Cannot verify: {result.error_message}",
                 })

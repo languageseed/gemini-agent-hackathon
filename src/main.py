@@ -527,7 +527,7 @@ def record_request():
     _metrics["last_request"] = datetime.datetime.utcnow().isoformat()
 
 
-@app.get("/diagnostics")
+@app.get("/diagnostics", dependencies=[Depends(verify_api_key)])
 async def diagnostics():
     """
     Comprehensive diagnostics endpoint - tests all components.
@@ -629,7 +629,7 @@ async def diagnostics():
     return results
 
 
-@app.get("/diagnostics/quick")
+@app.get("/diagnostics/quick", dependencies=[Depends(verify_api_key)])
 async def diagnostics_quick():
     """Quick diagnostics - just returns cached metrics without running tests."""
     return {
@@ -640,7 +640,7 @@ async def diagnostics_quick():
     }
 
 
-@app.get("/logs")
+@app.get("/logs", dependencies=[Depends(verify_api_key)])
 async def get_logs(limit: int = 50, level: Optional[str] = None):
     """
     Get recent log entries from the in-memory buffer.
@@ -670,7 +670,7 @@ async def get_logs(limit: int = 50, level: Optional[str] = None):
     }
 
 
-@app.get("/logs/errors")
+@app.get("/logs/errors", dependencies=[Depends(verify_api_key)])
 async def get_error_logs(limit: int = 20):
     """Get recent error logs only."""
     logs = [l for l in _log_buffer if l.get("level") == "error"]
@@ -684,7 +684,7 @@ async def get_error_logs(limit: int = 20):
     }
 
 
-@app.get("/logs/requests")
+@app.get("/logs/requests", dependencies=[Depends(verify_api_key)])
 async def get_request_logs(limit: int = 20):
     """Get recent request logs with timing."""
     logs = [l for l in _log_buffer if l.get("event") in ["request_started", "request_completed", "request_failed"]]
@@ -697,7 +697,7 @@ async def get_request_logs(limit: int = 20):
     }
 
 
-@app.get("/diagnostics/e2b")
+@app.get("/diagnostics/e2b", dependencies=[Depends(verify_api_key)])
 async def diagnostics_e2b():
     """
     Test E2B sandbox connectivity.
