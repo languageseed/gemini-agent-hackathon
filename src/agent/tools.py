@@ -265,23 +265,24 @@ async def execute_code_in_sandbox(code: str, timeout: int = 30) -> tuple[bool, s
             except asyncio.TimeoutError:
                 logger.warning("e2b_timeout", timeout=timeout)
                 return False, f"ERROR: TimeoutError: Execution timed out after {timeout}s"
-                
-                output_parts = []
-                if hasattr(execution, 'text') and execution.text:
-                    output_parts.append(execution.text)
-                elif hasattr(execution, 'logs'):
-                    if execution.logs.stdout:
-                        output_parts.append(execution.logs.stdout)
-                    if execution.logs.stderr:
-                        output_parts.append(f"STDERR: {execution.logs.stderr}")
-                
-                if hasattr(execution, 'error') and execution.error:
-                    error_msg = str(execution.error)
-                    if hasattr(execution.error, 'name'):
-                        error_msg = f"{execution.error.name}: {execution.error.value}"
-                    return False, f"ERROR: {error_msg}"
-                
-                return True, "\n".join(output_parts) or "Success (no output)"
+            
+            # Process successful execution result
+            output_parts = []
+            if hasattr(execution, 'text') and execution.text:
+                output_parts.append(execution.text)
+            elif hasattr(execution, 'logs'):
+                if execution.logs.stdout:
+                    output_parts.append(execution.logs.stdout)
+                if execution.logs.stderr:
+                    output_parts.append(f"STDERR: {execution.logs.stderr}")
+            
+            if hasattr(execution, 'error') and execution.error:
+                error_msg = str(execution.error)
+                if hasattr(execution.error, 'name'):
+                    error_msg = f"{execution.error.name}: {execution.error.value}"
+                return False, f"ERROR: {error_msg}"
+            
+            return True, "\n".join(output_parts) or "Success (no output)"
                 
         except Exception as e:
             logger.warning("e2b_fallback", error=str(e))
