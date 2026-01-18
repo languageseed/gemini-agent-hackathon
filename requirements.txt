@@ -23,6 +23,9 @@ sqlalchemy[asyncio]>=2.0.0
 # Redis (Railway Redis)
 redis>=5.0.0
 
+# E2B Code Execution Sandbox
+e2b-code-interpreter>=1.0.0
+
 # Structured logging
 structlog>=24.1.0
 

@@ -1,7 +1,14 @@
 """
 Gemini Agent - Hackathon Project
 
-A Gemini-powered agent with tool calling capabilities.
+A Gemini-powered Marathon Agent with tool calling capabilities.
+
+Features:
+- Multi-turn agentic loop with thought signature continuity
+- Dynamic thinking levels for cost/latency optimization
+- E2B code execution sandbox
+- Session persistence for resume capability
+- SSE streaming for real-time progress
 
 Run locally:
     uvicorn src.main:app --reload
@@ -11,6 +18,7 @@ Deploy to Railway:
 """
 
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Optional, List
 
@@ -23,6 +31,14 @@ import structlog
 
 # Load environment variables
 load_dotenv()
+
+# Import agent module
+from .agent import (
+    MarathonAgent, AgentConfig, AgentResult,
+    ToolRegistry, SessionStore,
+    StreamEvent, EventType, EventCollector
+)
+from .agent.tools import create_default_tools
 
 
 # ============================================================
@@ -80,6 +96,10 @@ logger = structlog.get_logger()
 # Gemini client (lazy initialized)
 _gemini_client = None
 
+# Marathon Agent (lazy initialized)
+_marathon_agent = None
+_session_store = None
+
 
 def get_gemini_client():
     """Get or initialize the Gemini client."""
@@ -101,7 +121,37 @@ def get_gemini_client():
 
 def get_model_name() -> str:
     """Get the configured model name."""
-    return os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+    return os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
+
+def get_marathon_agent() -> MarathonAgent:
+    """Get or initialize the Marathon Agent."""
+    global _marathon_agent, _session_store
+    
+    if _marathon_agent is None:
+        client = get_gemini_client()
+        tools = create_default_tools()
+        _session_store = SessionStore()
+        
+        config = AgentConfig(
+            model=get_model_name(),
+            max_iterations=15,
+        )
+        
+        _marathon_agent = MarathonAgent(
+            client=client,
+            tools=tools,
+            sessions=_session_store,
+            config=config,
+        )
+    
+    return _marathon_agent
+
+
+def get_session_store() -> SessionStore:
+    """Get session store (initializes agent if needed)."""
+    get_marathon_agent()  # Ensure initialized
+    return _session_store
 
 
 @asynccontextmanager
@@ -265,11 +315,24 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
 async def root():
     """Root endpoint - shows API info."""
     return {
-        "name": "Gemini Agent",
-        "version": "0.1.0",
+        "name": "Gemini Marathon Agent",
+        "version": "0.2.0",
         "status": "running",
         "model": get_model_name(),
         "docs": "/docs",
+        "endpoints": {
+            "legacy": {
+                "generate": "/generate",
+                "chat": "/chat",
+                "agent": "/agent",
+            },
+            "v2": {
+                "agent": "/v2/agent",
+                "agent_stream": "/v2/agent/stream",
+                "tools": "/v2/tools",
+                "sessions": "/v2/sessions",
+            }
+        }
     }
 
 
@@ -280,6 +343,14 @@ async def health():
         "status": "healthy",
         "model": get_model_name(),
         "secured": get_api_key() is not None,
+        "version": "0.2.0",
+        "capabilities": [
+            "marathon_agent",
+            "tool_calling",
+            "code_execution",
+            "session_persistence",
+            "streaming",
+        ],
     }
 
 
@@ -468,8 +539,176 @@ async def agent(request: AgentRequest):
 
 @app.get("/tools")
 async def list_tools():
-    """List available tools."""
+    """List available tools (legacy)."""
     return {"tools": TOOLS}
+
+
+# ============================================================
+# V2 ENDPOINTS - Marathon Agent
+# ============================================================
+
+class MarathonAgentRequest(BaseModel):
+    """Request for Marathon Agent execution."""
+    task: str
+    session_id: Optional[str] = None
+    max_iterations: Optional[int] = None
+
+
+class MarathonAgentResponse(BaseModel):
+    """Response from Marathon Agent."""
+    text: str
+    tool_calls: List[dict]
+    iterations: int
+    session_id: Optional[str]
+    completed: bool
+    error: Optional[str] = None
+
+
+@app.post("/v2/agent", response_model=MarathonAgentResponse, dependencies=[Depends(verify_api_key)])
+async def marathon_agent(request: MarathonAgentRequest):
+    """
+    Run the Marathon Agent.
+    
+    This is the new agent endpoint with:
+    - Dynamic thinking levels
+    - E2B code execution
+    - Session persistence for resume
+    - Parallel tool execution
+    """
+    try:
+        agent = get_marathon_agent()
+        
+        # Override max iterations if specified
+        if request.max_iterations:
+            agent.config.max_iterations = request.max_iterations
+        
+        result = await agent.run(
+            task=request.task,
+            session_id=request.session_id,
+        )
+        
+        return MarathonAgentResponse(
+            text=result.text,
+            tool_calls=result.tool_calls,
+            iterations=result.iterations,
+            session_id=result.session_id,
+            completed=result.completed,
+            error=result.error,
+        )
+        
+    except Exception as e:
+        logger.error("marathon_agent_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v2/agent/stream", dependencies=[Depends(verify_api_key)])
+async def marathon_agent_stream(request: MarathonAgentRequest):
+    """
+    Run the Marathon Agent with SSE streaming.
+    
+    Returns Server-Sent Events for real-time progress:
+    - start: Agent started
+    - thinking: Thinking level selected
+    - token: Text generated
+    - tool_start: Tool execution started
+    - tool_result: Tool execution completed
+    - done: Agent completed
+    - error: Error occurred
+    """
+    try:
+        agent = get_marathon_agent()
+        
+        if request.max_iterations:
+            agent.config.max_iterations = request.max_iterations
+        
+        # Collect events
+        collector = EventCollector()
+        
+        # Run agent with event callback
+        result = await agent.run(
+            task=request.task,
+            session_id=request.session_id,
+            on_event=collector,
+        )
+        
+        # Add final result event
+        collector(StreamEvent(
+            type=EventType.DONE,
+            data={
+                "text": result.text,
+                "tool_calls": result.tool_calls,
+                "iterations": result.iterations,
+                "session_id": result.session_id,
+                "completed": result.completed,
+            }
+        ))
+        
+        async def event_generator():
+            for event in collector.events:
+                yield event.to_sse()
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+        
+    except Exception as e:
+        logger.error("marathon_agent_stream_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v2/tools")
+async def list_marathon_tools():
+    """List available Marathon Agent tools."""
+    agent = get_marathon_agent()
+    return {
+        "tools": [
+            {
+                "name": name,
+                "description": tool.description,
+                "parameters": tool.parameters
+            }
+            for name, tool in agent.tools.items()
+        ]
+    }
+
+
+@app.get("/v2/sessions", dependencies=[Depends(verify_api_key)])
+async def list_sessions():
+    """List recent sessions."""
+    store = get_session_store()
+    session_ids = await store.list_sessions()
+    return {"sessions": session_ids}
+
+
+@app.get("/v2/sessions/{session_id}", dependencies=[Depends(verify_api_key)])
+async def get_session(session_id: str):
+    """Get session details."""
+    store = get_session_store()
+    session = await store.load(session_id)
+    
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return {
+        "id": session.id,
+        "iteration": session.iteration,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+        "message_count": len(session.messages),
+    }
+
+
+@app.delete("/v2/sessions/{session_id}", dependencies=[Depends(verify_api_key)])
+async def delete_session(session_id: str):
+    """Delete a session."""
+    store = get_session_store()
+    await store.delete(session_id)
+    return {"deleted": session_id}
 
 
 # ============================================================
