@@ -1,8 +1,15 @@
 # Environment files (NEVER commit these!)
 .env
+.env.*
 .env.local
 .env.*.local
 .env.production
+.env.backup
+*.env
+*secrets*
+*credentials*
+*.pem
+*.key
 
 # Python
 __pycache__/
