@@ -451,8 +451,8 @@ async def diagnostics():
             try:
                 from e2b_code_interpreter import Sandbox
                 start = time.time()
-                # E2B v2.x uses E2B_API_KEY env var automatically
-                sbx = Sandbox(timeout=15)
+                # E2B v2.x uses E2B_API_KEY env var automatically, no params needed
+                sbx = Sandbox()
                 result = sbx.run_code("print('OK')")
                 sbx.kill()
                 latency = (time.time() - start) * 1000
