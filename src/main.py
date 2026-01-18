@@ -124,8 +124,13 @@ def get_gemini_client():
 
 
 def get_model_name() -> str:
-    """Get the configured model name."""
+    """Get the configured model name for general use."""
     return os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
+
+def get_reasoning_model() -> str:
+    """Get the model for deep reasoning tasks (analysis, verification)."""
+    return os.environ.get("GEMINI_REASONING_MODEL", "gemini-3-pro-preview")
 
 
 def get_marathon_agent() -> MarathonAgent:
@@ -414,9 +419,12 @@ async def health():
     """Health check endpoint for Railway/deployment platforms."""
     return {
         "status": "healthy",
-        "model": get_model_name(),
+        "models": {
+            "default": get_model_name(),
+            "reasoning": get_reasoning_model(),
+        },
         "secured": get_api_key() is not None,
-        "version": "0.4.0",
+        "version": "0.5.0",
         "capabilities": [
             "marathon_agent",
             "tool_calling",
@@ -425,6 +433,7 @@ async def health():
             "streaming",
             "codebase_analysis",
             "verified_analysis",
+            "auto_fix_suggestions",
         ],
     }
 
@@ -1528,10 +1537,10 @@ async def analyze_repository_verified(request: VerifiedAnalyzeRequest):
     if not clone_result.success:
         raise HTTPException(status_code=400, detail=f"Failed to clone repository: {clone_result.output}")
     
-    # Create verified analyzer
+    # Create verified analyzer with reasoning model for deep analysis
     analyzer = VerifiedAnalyzer(
         client=client,
-        model=get_model_name(),
+        model=get_reasoning_model(),
         code_executor=execute_code,
     )
     
@@ -1658,10 +1667,10 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
                 ))
                 return
             
-            # Create analyzer
+            # Create analyzer with reasoning model
             analyzer = VerifiedAnalyzer(
                 client=client,
-                model=get_model_name(),
+                model=get_reasoning_model(),
                 code_executor=execute_code,
             )
             

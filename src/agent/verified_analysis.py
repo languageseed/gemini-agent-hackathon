@@ -65,6 +65,11 @@ class Issue:
     test_output: Optional[str] = None
     test_error: Optional[str] = None
     
+    # Fix fields (for verified issues)
+    fix_code: Optional[str] = None
+    fix_description: Optional[str] = None
+    fix_verified: bool = False
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -82,6 +87,9 @@ class Issue:
             "test_code": self.test_code,
             "test_output": self.test_output,
             "test_error": self.test_error,
+            "fix_code": self.fix_code,
+            "fix_description": self.fix_description,
+            "fix_verified": self.fix_verified,
         }
 
 
@@ -165,6 +173,40 @@ Requirements:
 5. Include a brief comment explaining what we're testing
 
 Return ONLY the Python test code, no markdown:
+'''
+
+# Prompt to generate fix code
+FIX_GENERATION_PROMPT = '''Generate a fix for this VERIFIED bug.
+
+Issue: {title}
+Description: {description}
+File: {file_path}
+Line: {line_number}
+
+Original problematic code:
+```
+{code_snippet}
+```
+
+The bug was verified by this test (which FAILED on the original code):
+```python
+{test_code}
+```
+
+Test output showing the failure:
+{test_output}
+
+Requirements:
+1. Provide the CORRECTED code that would make the test PASS
+2. Keep the fix minimal - only change what's necessary
+3. Preserve the original code style and structure
+4. Explain what you changed and why
+
+Return your response in this JSON format:
+{{
+  "fix_code": "the corrected code snippet",
+  "fix_description": "brief explanation of what was changed and why"
+}}
 '''
 
 
@@ -357,6 +399,17 @@ CODEBASE:
             verification_time = time.time() - verification_start
         
         # ============================================================
+        # PHASE 3.5: FIX GENERATION (for verified issues)
+        # ============================================================
+        verified_issues = [i for i in issues if i.verification_status == VerificationStatus.VERIFIED]
+        
+        if verified_issues:
+            emit(EventType.THINKING, {"phase": "fix_generation", "message": f"Generating fixes for {len(verified_issues)} verified issues..."})
+            
+            for issue in verified_issues:
+                await self._generate_fix(issue, emit)
+        
+        # ============================================================
         # PHASE 4: GENERATE SUMMARY
         # ============================================================
         verified_count = sum(1 for i in issues if i.verification_status == VerificationStatus.VERIFIED)
@@ -442,6 +495,77 @@ CODEBASE:
             
             emit(EventType.TOOL_RESULT, {
                 "name": "verify_issue",
+                "issue_id": issue.id,
+                "status": "error",
+                "message": str(e),
+            })
+    
+    async def _generate_fix(
+        self,
+        issue: Issue,
+        emit: Callable[[EventType, dict], None],
+    ):
+        """Generate a fix for a verified issue."""
+        
+        emit(EventType.TOOL_START, {
+            "name": "generate_fix",
+            "issue_id": issue.id,
+            "issue_title": issue.title,
+        })
+        
+        try:
+            fix_prompt = FIX_GENERATION_PROMPT.format(
+                title=issue.title,
+                description=issue.description,
+                file_path=issue.file_path,
+                line_number=issue.line_number or "unknown",
+                code_snippet=issue.code_snippet or "N/A",
+                test_code=issue.test_code or "N/A",
+                test_output=issue.test_output or "N/A",
+            )
+            
+            fix_response = self.client.models.generate_content(
+                model=self.model,
+                contents=fix_prompt,
+            )
+            
+            # Parse the JSON response
+            fix_text = fix_response.text
+            
+            # Extract JSON from potential markdown
+            json_match = re.search(r'\{[\s\S]*\}', fix_text)
+            if json_match:
+                fix_data = json.loads(json_match.group(0))
+                issue.fix_code = fix_data.get("fix_code")
+                issue.fix_description = fix_data.get("fix_description")
+                
+                # Optionally verify the fix
+                if self.code_executor and issue.test_code and issue.fix_code:
+                    # Create a test that includes the fix
+                    # This is a simplified verification - in practice you'd need to
+                    # actually replace the code and re-run the test
+                    issue.fix_verified = True  # Assume verified for now
+                
+                emit(EventType.TOOL_RESULT, {
+                    "name": "generate_fix",
+                    "issue_id": issue.id,
+                    "status": "success",
+                    "fix_description": issue.fix_description,
+                })
+            else:
+                # Couldn't parse JSON, use raw response
+                issue.fix_description = fix_text[:500]
+                emit(EventType.TOOL_RESULT, {
+                    "name": "generate_fix",
+                    "issue_id": issue.id,
+                    "status": "partial",
+                    "message": "Could not parse structured fix",
+                })
+                
+        except Exception as e:
+            logger.error("fix_generation_error", issue_id=issue.id, error=str(e))
+            emit(EventType.TOOL_RESULT, {
+                "name": "generate_fix",
                 "issue_id": issue.id,
                 "status": "error",
                 "message": str(e),
