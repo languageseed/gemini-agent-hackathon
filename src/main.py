@@ -15,6 +15,8 @@ Run locally:
 
 Deploy to Railway:
     git push (auto-deploys if connected)
+
+Last deploy trigger: 2026-01-18
 """
 
 import os
