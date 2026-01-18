@@ -525,20 +525,10 @@ async def diagnostics_e2b():
         from e2b_code_interpreter import Sandbox
         start = time.time()
         
-        # Try creating sandbox with different approaches based on e2b version
-        sandbox = None
-        try:
-            # Modern e2b API
-            sandbox = Sandbox()
-        except TypeError:
-            # Fallback for older versions
-            try:
-                sandbox = Sandbox(timeout=30)
-            except TypeError:
-                return {"status": "error", "error": "Incompatible E2B SDK version"}
-        
-        result = sandbox.run_code("import sys; print(f'Python {sys.version}')")
-        sandbox.kill()
+        # E2B v2.x API: use Sandbox.create() context manager
+        with Sandbox.create() as sandbox:
+            result = sandbox.run_code("import sys; print(f'Python {sys.version}')")
+            output = result.text if hasattr(result, 'text') else (result.logs.stdout if result.logs else None)
         
         latency = (time.time() - start) * 1000
         _metrics["e2b_calls"]["total"] += 1
@@ -548,7 +538,7 @@ async def diagnostics_e2b():
             "status": "ok",
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "latency_ms": round(latency, 2),
-            "output": result.logs.stdout[:200] if result.logs.stdout else None,
+            "output": output[:200] if output else "No output",
         }
     except ImportError:
         return {"status": "not_installed", "error": "e2b_code_interpreter not installed"}
@@ -1279,22 +1269,26 @@ async def analyze_repository_verified(request: VerifiedAnalyzeRequest):
             try:
                 from e2b_code_interpreter import Sandbox
                 
-                sandbox = Sandbox(timeout=30)
-                try:
+                # E2B v2.x API: use Sandbox.create()
+                with Sandbox.create() as sandbox:
                     execution = sandbox.run_code(code)
                     
                     output_parts = []
-                    if execution.logs.stdout:
-                        output_parts.append(execution.logs.stdout)
-                    if execution.logs.stderr:
-                        output_parts.append(f"STDERR: {execution.logs.stderr}")
+                    if hasattr(execution, 'text') and execution.text:
+                        output_parts.append(execution.text)
+                    elif hasattr(execution, 'logs'):
+                        if execution.logs.stdout:
+                            output_parts.append(execution.logs.stdout)
+                        if execution.logs.stderr:
+                            output_parts.append(f"STDERR: {execution.logs.stderr}")
                     
-                    if execution.error:
-                        return False, f"ERROR: {execution.error.name}: {execution.error.value}"
+                    if hasattr(execution, 'error') and execution.error:
+                        error_msg = str(execution.error)
+                        if hasattr(execution.error, 'name'):
+                            error_msg = f"{execution.error.name}: {execution.error.value}"
+                        return False, f"ERROR: {error_msg}"
                     
                     return True, "\n".join(output_parts) or "Success (no output)"
-                finally:
-                    sandbox.kill()
                     
             except Exception as e:
                 logger.warning("e2b_fallback", error=str(e))
@@ -1376,22 +1370,26 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
             try:
                 from e2b_code_interpreter import Sandbox
                 
-                sandbox = Sandbox(timeout=30)
-                try:
+                # E2B v2.x API: use Sandbox.create()
+                with Sandbox.create() as sandbox:
                     execution = sandbox.run_code(code)
                     
                     output_parts = []
-                    if execution.logs.stdout:
-                        output_parts.append(execution.logs.stdout)
-                    if execution.logs.stderr:
-                        output_parts.append(f"STDERR: {execution.logs.stderr}")
+                    if hasattr(execution, 'text') and execution.text:
+                        output_parts.append(execution.text)
+                    elif hasattr(execution, 'logs'):
+                        if execution.logs.stdout:
+                            output_parts.append(execution.logs.stdout)
+                        if execution.logs.stderr:
+                            output_parts.append(f"STDERR: {execution.logs.stderr}")
                     
-                    if execution.error:
-                        return False, f"ERROR: {execution.error.name}: {execution.error.value}"
+                    if hasattr(execution, 'error') and execution.error:
+                        error_msg = str(execution.error)
+                        if hasattr(execution.error, 'name'):
+                            error_msg = f"{execution.error.name}: {execution.error.value}"
+                        return False, f"ERROR: {error_msg}"
                     
                     return True, "\n".join(output_parts) or "Success (no output)"
-                finally:
-                    sandbox.kill()
                     
             except Exception as e:
                 logger.warning("e2b_fallback", error=str(e))

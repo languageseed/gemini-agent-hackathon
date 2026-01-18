@@ -188,10 +188,8 @@ The sandbox has numpy, pandas, matplotlib, requests pre-installed."""
         try:
             from e2b_code_interpreter import Sandbox
             
-            # Create sandbox (reuse if possible)
-            sandbox = Sandbox(timeout=timeout)
-            
-            try:
+            # E2B v2.x API: use Sandbox.create() context manager
+            with Sandbox.create() as sandbox:
                 # Execute code
                 execution = sandbox.run_code(code)
                 
@@ -199,21 +197,27 @@ The sandbox has numpy, pandas, matplotlib, requests pre-installed."""
                 output_parts = []
                 artifacts = []
                 
-                if execution.logs.stdout:
-                    output_parts.append(execution.logs.stdout)
+                # Handle both old and new API formats
+                if hasattr(execution, 'text') and execution.text:
+                    output_parts.append(execution.text)
+                elif hasattr(execution, 'logs'):
+                    if execution.logs.stdout:
+                        output_parts.append(execution.logs.stdout)
+                    if execution.logs.stderr:
+                        output_parts.append(f"STDERR: {execution.logs.stderr}")
                 
-                if execution.logs.stderr:
-                    output_parts.append(f"STDERR: {execution.logs.stderr}")
-                
-                if execution.error:
-                    output_parts.append(f"ERROR: {execution.error.name}: {execution.error.value}")
+                if hasattr(execution, 'error') and execution.error:
+                    error_msg = str(execution.error)
+                    if hasattr(execution.error, 'name') and hasattr(execution.error, 'value'):
+                        error_msg = f"{execution.error.name}: {execution.error.value}"
+                    output_parts.append(f"ERROR: {error_msg}")
                     return ToolResult(
                         output="\n".join(output_parts) or "No output",
                         success=False
                     )
                 
                 # Check for results (charts, data, etc.)
-                if execution.results:
+                if hasattr(execution, 'results') and execution.results:
                     for result in execution.results:
                         if hasattr(result, 'png') and result.png:
                             artifacts.append(f"[Chart generated: {len(result.png)} bytes]")
@@ -225,9 +229,6 @@ The sandbox has numpy, pandas, matplotlib, requests pre-installed."""
                     success=True,
                     artifacts=artifacts
                 )
-                
-            finally:
-                sandbox.kill()
                 
         except ImportError:
             logger.warning("e2b_not_installed", fallback="local")
