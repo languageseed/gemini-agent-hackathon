@@ -441,8 +441,8 @@ async def diagnostics():
     
     results["checks"]["gemini_api"] = gemini_status
     
-    # 2. Check E2B sandbox connectivity
-    e2b_status = {"status": "unknown", "latency_ms": None, "error": None}
+    # 2. Check E2B sandbox configuration (don't spin up sandbox - too slow for diagnostics)
+    e2b_status = {"status": "unknown", "error": None}
     try:
         e2b_key = os.environ.get("E2B_API_KEY")
         if not e2b_key:
@@ -450,29 +450,16 @@ async def diagnostics():
         else:
             try:
                 from e2b_code_interpreter import Sandbox
-                start = time.time()
-                # E2B v2.x uses E2B_API_KEY env var automatically, no params needed
-                sbx = Sandbox()
-                result = sbx.run_code("print('OK')")
-                sbx.kill()
-                latency = (time.time() - start) * 1000
+                # Just verify import works and key is set
                 e2b_status = {
-                    "status": "ok",
-                    "latency_ms": round(latency, 2),
-                    "output": result.logs.stdout[:50] if result.logs.stdout else None,
+                    "status": "configured",
+                    "api_key_set": True,
+                    "note": "Use /diagnostics/e2b for full sandbox test",
                 }
-                _metrics["e2b_calls"]["total"] += 1
-                _metrics["e2b_calls"]["success"] += 1
             except ImportError:
                 e2b_status = {"status": "not_installed", "error": "e2b_code_interpreter not installed"}
-            except Exception as e:
-                e2b_status = {"status": "error", "error": str(e)[:200]}
-                _metrics["e2b_calls"]["total"] += 1
-                _metrics["e2b_calls"]["errors"] += 1
-                record_error(f"E2B: {e}")
     except Exception as e:
         e2b_status = {"status": "error", "error": str(e)[:200]}
-        record_error(f"E2B config: {e}")
     
     results["checks"]["e2b_sandbox"] = e2b_status
     
@@ -519,6 +506,61 @@ async def diagnostics_quick():
         "metrics": _metrics,
         "version": "0.4.0",
     }
+
+
+@app.get("/diagnostics/e2b")
+async def diagnostics_e2b():
+    """
+    Test E2B sandbox connectivity.
+    This spins up a real sandbox and runs code - use sparingly.
+    """
+    import datetime
+    import time
+    
+    e2b_key = os.environ.get("E2B_API_KEY")
+    if not e2b_key:
+        return {"status": "not_configured", "error": "E2B_API_KEY not set"}
+    
+    try:
+        from e2b_code_interpreter import Sandbox
+        start = time.time()
+        
+        # Try creating sandbox with different approaches based on e2b version
+        sandbox = None
+        try:
+            # Modern e2b API
+            sandbox = Sandbox()
+        except TypeError:
+            # Fallback for older versions
+            try:
+                sandbox = Sandbox(timeout=30)
+            except TypeError:
+                return {"status": "error", "error": "Incompatible E2B SDK version"}
+        
+        result = sandbox.run_code("import sys; print(f'Python {sys.version}')")
+        sandbox.kill()
+        
+        latency = (time.time() - start) * 1000
+        _metrics["e2b_calls"]["total"] += 1
+        _metrics["e2b_calls"]["success"] += 1
+        
+        return {
+            "status": "ok",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "latency_ms": round(latency, 2),
+            "output": result.logs.stdout[:200] if result.logs.stdout else None,
+        }
+    except ImportError:
+        return {"status": "not_installed", "error": "e2b_code_interpreter not installed"}
+    except Exception as e:
+        _metrics["e2b_calls"]["total"] += 1
+        _metrics["e2b_calls"]["errors"] += 1
+        record_error(f"E2B test: {e}")
+        return {
+            "status": "error",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "error": str(e)[:500],
+        }
 
 
 @app.post("/generate", response_model=GenerateResponse, dependencies=[Depends(verify_api_key)])
