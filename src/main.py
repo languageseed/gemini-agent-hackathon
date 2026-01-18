@@ -109,11 +109,11 @@ def get_gemini_client():
     if _gemini_client is None:
         from google import genai
         
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise HTTPException(
                 status_code=500,
-                detail="GOOGLE_API_KEY environment variable not set"
+                detail="GEMINI_API_KEY environment variable not set"
             )
         
         _gemini_client = genai.Client(api_key=api_key)
