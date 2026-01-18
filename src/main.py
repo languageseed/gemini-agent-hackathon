@@ -185,14 +185,31 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
-allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+# CORS - explicit origins for security (no wildcard with credentials)
+CORS_ORIGINS_DEFAULT = [
+    "http://localhost:5173",      # Vite dev server
+    "http://localhost:3000",      # Alternative dev
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "https://gemini-frontend.vercel.app",  # Production frontend
+]
+
+cors_origins_env = os.environ.get("ALLOWED_ORIGINS", "")
+if cors_origins_env:
+    # If env var is set, use those origins (comma-separated)
+    allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+else:
+    allowed_origins = CORS_ORIGINS_DEFAULT
+
+# If "*" is in the list, we can't use credentials
+allow_credentials = "*" not in allowed_origins
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=allow_credentials,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
 
 

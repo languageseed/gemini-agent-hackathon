@@ -119,6 +119,116 @@ class CalculateTool(Tool):
 # E2B CODE EXECUTION
 # ============================================================
 
+class VerificationResult:
+    """Structured result from verification test execution."""
+    
+    def __init__(
+        self, 
+        status: str,  # passed, assertion_failed, import_error, runtime_error, timeout, env_error
+        output: str,
+        error_type: str = None,
+        error_message: str = None,
+    ):
+        self.status = status
+        self.output = output
+        self.error_type = error_type
+        self.error_message = error_message
+    
+    @property
+    def is_verified(self) -> bool:
+        """Only assertion failures count as verified bugs."""
+        return self.status == "assertion_failed"
+    
+    @property  
+    def is_unverified(self) -> bool:
+        """Test passed = bug may be false positive."""
+        return self.status == "passed"
+    
+    @property
+    def is_error(self) -> bool:
+        """Environmental/runtime errors - can't determine verification."""
+        return self.status in ("import_error", "runtime_error", "timeout", "env_error")
+
+
+def classify_test_result(success: bool, output: str, error_info: str = None) -> VerificationResult:
+    """
+    Classify test execution result into verification status.
+    
+    Critical: Only assertion failures = verified bug.
+    Import/module errors = environment issue, NOT verified.
+    """
+    output_lower = output.lower() if output else ""
+    error_lower = error_info.lower() if error_info else ""
+    combined = output_lower + " " + error_lower
+    
+    if success:
+        return VerificationResult("passed", output)
+    
+    # Check for assertion failures (these are VERIFIED bugs)
+    assertion_patterns = [
+        "assertionerror",
+        "assert ",
+        "assertion failed",
+        "expected",
+        "!=",
+        "not equal",
+    ]
+    if any(p in combined for p in assertion_patterns):
+        return VerificationResult(
+            "assertion_failed", 
+            output,
+            error_type="AssertionError",
+            error_message=error_info or output[:200],
+        )
+    
+    # Check for import/module errors (NOT verified - environment issue)
+    import_patterns = [
+        "modulenotfounderror",
+        "importerror", 
+        "no module named",
+        "cannot import",
+        "module not found",
+    ]
+    if any(p in combined for p in import_patterns):
+        return VerificationResult(
+            "import_error",
+            output,
+            error_type="ImportError",
+            error_message="Test requires modules not available in sandbox",
+        )
+    
+    # Check for file/path errors
+    file_patterns = [
+        "filenotfounderror",
+        "no such file",
+        "path does not exist",
+    ]
+    if any(p in combined for p in file_patterns):
+        return VerificationResult(
+            "env_error",
+            output,
+            error_type="FileNotFoundError", 
+            error_message="Test references files not in sandbox",
+        )
+    
+    # Check for timeout
+    if "timeout" in combined or "timed out" in combined:
+        return VerificationResult(
+            "timeout",
+            output,
+            error_type="TimeoutError",
+            error_message="Test execution timed out",
+        )
+    
+    # Generic runtime error
+    return VerificationResult(
+        "runtime_error",
+        output,
+        error_type="RuntimeError",
+        error_message=error_info or output[:200],
+    )
+
+
 async def execute_code_in_sandbox(code: str, timeout: int = 30) -> tuple[bool, str]:
     """
     Shared E2B code execution function.
@@ -160,6 +270,25 @@ async def execute_code_in_sandbox(code: str, timeout: int = 30) -> tuple[bool, s
         return await _execute_local(code, timeout)
     
     return False, "E2B_API_KEY not set and local execution disabled"
+
+
+async def execute_verification_test(test_code: str, timeout: int = 30) -> VerificationResult:
+    """
+    Execute a verification test and classify the result.
+    
+    Returns a VerificationResult with proper classification:
+    - assertion_failed: Bug is VERIFIED (test caught the issue)
+    - passed: Bug is UNVERIFIED (may be false positive)
+    - import_error/runtime_error/env_error: Cannot determine (environmental issue)
+    """
+    success, output = await execute_code_in_sandbox(test_code, timeout)
+    
+    # Extract error info if present
+    error_info = None
+    if "ERROR:" in output:
+        error_info = output.split("ERROR:")[-1].strip()
+    
+    return classify_test_result(success, output, error_info)
 
 
 async def _execute_local(code: str, timeout: int) -> tuple[bool, str]:

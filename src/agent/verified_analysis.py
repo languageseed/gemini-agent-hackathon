@@ -68,7 +68,7 @@ class Issue:
     # Fix fields (for verified issues)
     fix_code: Optional[str] = None
     fix_description: Optional[str] = None
-    fix_verified: bool = False
+    fix_status: str = "none"  # none, proposed, verified, failed
     
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -89,7 +89,7 @@ class Issue:
             "test_error": self.test_error,
             "fix_code": self.fix_code,
             "fix_description": self.fix_description,
-            "fix_verified": self.fix_verified,
+            "fix_status": self.fix_status,  # none, proposed, verified, failed
         }
 
 
@@ -155,7 +155,7 @@ Analysis to extract from:
 '''
 
 # Prompt to generate verification tests
-TEST_GENERATION_PROMPT = '''Generate a Python test that would FAIL if this bug exists and PASS if it's fixed.
+TEST_GENERATION_PROMPT = '''Generate a SELF-CONTAINED Python test that verifies this bug exists.
 
 Issue: {title}
 Description: {description}
@@ -165,14 +165,32 @@ Problematic code:
 {code_snippet}
 ```
 
-Requirements:
-1. The test should be self-contained (no external dependencies beyond stdlib)
-2. Use assert statements
-3. If the bug exists, the test should FAIL (assertion error or exception)
-4. If the bug is fixed, the test should PASS
-5. Include a brief comment explaining what we're testing
+CRITICAL REQUIREMENTS:
+1. The test MUST be completely self-contained - embed/copy the problematic code directly in the test
+2. DO NOT import from the repository - the test runs in an isolated sandbox
+3. Only use Python standard library (no pip packages)
+4. Use assert statements that will FAIL if the bug exists
+5. The test should PASS when the bug is fixed
 
-Return ONLY the Python test code, no markdown:
+Example structure:
+```python
+# Test for: {title}
+# Copy the problematic function/code here
+def buggy_function():
+    # paste the code with the bug
+    pass
+
+# Test that demonstrates the bug
+def test_bug():
+    result = buggy_function()
+    assert result == expected, f"Bug exists: got {{result}}, expected {{expected}}"
+
+# Run test
+test_bug()
+print("PASS: Bug was fixed")
+```
+
+Return ONLY the Python test code, no markdown or explanation:
 '''
 
 # Prompt to generate fix code
@@ -451,6 +469,7 @@ CODEBASE:
         emit: Callable[[EventType, dict], None],
     ):
         """Generate and run a verification test for an issue."""
+        from .tools import execute_verification_test
         
         emit(EventType.TOOL_START, {
             "name": "verify_issue",
@@ -475,31 +494,46 @@ CODEBASE:
             test_code = extract_test_code(test_response.text)
             issue.test_code = test_code
             
-            # Execute test
-            if self.code_executor:
-                success, output = await self.code_executor(test_code)
-                issue.test_output = output
-                
-                if not success:
-                    # Test failed = bug is VERIFIED (test caught the issue)
-                    issue.verification_status = VerificationStatus.VERIFIED
-                    emit(EventType.TOOL_RESULT, {
-                        "name": "verify_issue",
-                        "issue_id": issue.id,
-                        "status": "verified",
-                        "message": "Bug confirmed - test failed as expected",
-                    })
-                else:
-                    # Test passed = bug may be false positive
-                    issue.verification_status = VerificationStatus.UNVERIFIED
-                    emit(EventType.TOOL_RESULT, {
-                        "name": "verify_issue",
-                        "issue_id": issue.id,
-                        "status": "unverified",
-                        "message": "Test passed - may be false positive",
-                    })
+            # Execute test with proper classification
+            result = await execute_verification_test(test_code)
+            issue.test_output = result.output
+            issue.test_error = result.error_message
+            
+            if result.is_verified:
+                # Test failed due to assertion = bug is VERIFIED
+                issue.verification_status = VerificationStatus.VERIFIED
+                emit(EventType.TOOL_RESULT, {
+                    "name": "verify_issue",
+                    "issue_id": issue.id,
+                    "status": "verified",
+                    "error_type": result.error_type,
+                    "message": "Bug confirmed - assertion failed as expected",
+                })
+            elif result.is_unverified:
+                # Test passed = bug may be false positive
+                issue.verification_status = VerificationStatus.UNVERIFIED
+                emit(EventType.TOOL_RESULT, {
+                    "name": "verify_issue",
+                    "issue_id": issue.id,
+                    "status": "unverified",
+                    "message": "Test passed - may be false positive",
+                })
             else:
-                issue.verification_status = VerificationStatus.SKIPPED
+                # Environmental error - cannot determine verification
+                issue.verification_status = VerificationStatus.ERROR
+                emit(EventType.TOOL_RESULT, {
+                    "name": "verify_issue",
+                    "issue_id": issue.id,
+                    "status": "error",
+                    "error_type": result.error_type,
+                    "message": f"Cannot verify: {result.error_message}",
+                })
+                logger.warning(
+                    "verification_env_error",
+                    issue_id=issue.id,
+                    error_type=result.error_type,
+                    message=result.error_message,
+                )
                 
         except Exception as e:
             logger.error("verification_error", issue_id=issue.id, error=str(e))
@@ -510,6 +544,7 @@ CODEBASE:
                 "name": "verify_issue",
                 "issue_id": issue.id,
                 "status": "error",
+                "error_type": "Exception",
                 "message": str(e),
             })
     
@@ -552,26 +587,28 @@ CODEBASE:
                 issue.fix_code = fix_data.get("fix_code")
                 issue.fix_description = fix_data.get("fix_description")
                 
-                # Optionally verify the fix
-                if self.code_executor and issue.test_code and issue.fix_code:
-                    # Create a test that includes the fix
-                    # This is a simplified verification - in practice you'd need to
-                    # actually replace the code and re-run the test
-                    issue.fix_verified = True  # Assume verified for now
+                # Mark as proposed - actual verification would require:
+                # 1. Creating a test with the fixed code
+                # 2. Running the test and confirming it passes
+                # For now, we're honest that fixes are proposals
+                issue.fix_status = "proposed"
                 
                 emit(EventType.TOOL_RESULT, {
                     "name": "generate_fix",
                     "issue_id": issue.id,
                     "status": "success",
+                    "fix_status": "proposed",  # Be explicit this is a proposal
                     "fix_description": issue.fix_description,
                 })
             else:
                 # Couldn't parse JSON, use raw response
                 issue.fix_description = fix_text[:500]
+                issue.fix_status = "proposed"
                 emit(EventType.TOOL_RESULT, {
                     "name": "generate_fix",
                     "issue_id": issue.id,
                     "status": "partial",
+                    "fix_status": "proposed",
                     "message": "Could not parse structured fix",
                 })
                 
