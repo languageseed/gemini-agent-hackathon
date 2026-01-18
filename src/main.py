@@ -320,7 +320,7 @@ async def root():
     """Root endpoint - shows API info."""
     return {
         "name": "Gemini Marathon Agent",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "status": "running",
         "model": get_model_name(),
         "docs": "/docs",
@@ -351,7 +351,7 @@ async def health():
         "status": "healthy",
         "model": get_model_name(),
         "secured": get_api_key() is not None,
-        "version": "0.3.0",
+        "version": "0.4.0",
         "capabilities": [
             "marathon_agent",
             "tool_calling",
@@ -359,6 +359,7 @@ async def health():
             "session_persistence",
             "streaming",
             "codebase_analysis",
+            "verified_analysis",
         ],
     }
 
