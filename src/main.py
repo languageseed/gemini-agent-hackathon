@@ -451,7 +451,8 @@ async def diagnostics():
             try:
                 from e2b_code_interpreter import Sandbox
                 start = time.time()
-                sbx = Sandbox(api_key=e2b_key, timeout=10)
+                # E2B v2.x uses E2B_API_KEY env var automatically
+                sbx = Sandbox(timeout=15)
                 result = sbx.run_code("print('OK')")
                 sbx.kill()
                 latency = (time.time() - start) * 1000
@@ -464,11 +465,14 @@ async def diagnostics():
                 _metrics["e2b_calls"]["success"] += 1
             except ImportError:
                 e2b_status = {"status": "not_installed", "error": "e2b_code_interpreter not installed"}
+            except Exception as e:
+                e2b_status = {"status": "error", "error": str(e)[:200]}
+                _metrics["e2b_calls"]["total"] += 1
+                _metrics["e2b_calls"]["errors"] += 1
+                record_error(f"E2B: {e}")
     except Exception as e:
         e2b_status = {"status": "error", "error": str(e)[:200]}
-        _metrics["e2b_calls"]["total"] += 1
-        _metrics["e2b_calls"]["errors"] += 1
-        record_error(f"E2B: {e}")
+        record_error(f"E2B config: {e}")
     
     results["checks"]["e2b_sandbox"] = e2b_status
     
