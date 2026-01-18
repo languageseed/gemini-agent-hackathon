@@ -186,6 +186,71 @@ app.add_middleware(
 
 
 # ============================================================
+# REQUEST LOGGING MIDDLEWARE
+# ============================================================
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests with timing and status."""
+    request_id = str(uuid.uuid4())[:8]
+    start_time = time.time()
+    
+    # Skip logging for health checks and static assets
+    path = request.url.path
+    skip_logging = path in ["/health", "/favicon.ico"]
+    
+    if not skip_logging:
+        add_log("info", "request_started", 
+                request_id=request_id,
+                method=request.method,
+                path=path,
+                client=request.client.host if request.client else "unknown")
+    
+    # Process request
+    try:
+        response = await call_next(request)
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Update metrics
+        _metrics["requests"]["total"] += 1
+        if 200 <= response.status_code < 400:
+            _metrics["requests"]["success"] += 1
+        else:
+            _metrics["requests"]["errors"] += 1
+        
+        _metrics["last_request"] = {
+            "path": path,
+            "method": request.method,
+            "status": response.status_code,
+            "duration_ms": round(duration_ms, 2),
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+        }
+        
+        if not skip_logging:
+            add_log("info", "request_completed",
+                    request_id=request_id,
+                    method=request.method,
+                    path=path,
+                    status=response.status_code,
+                    duration_ms=round(duration_ms, 2))
+        
+        return response
+        
+    except Exception as e:
+        duration_ms = (time.time() - start_time) * 1000
+        _metrics["requests"]["total"] += 1
+        _metrics["requests"]["errors"] += 1
+        
+        add_log("error", "request_failed",
+                request_id=request_id,
+                method=request.method,
+                path=path,
+                error=str(e)[:200],
+                duration_ms=round(duration_ms, 2))
+        raise
+
+
+# ============================================================
 # MODELS
 # ============================================================
 
@@ -369,6 +434,15 @@ async def health():
 # ============================================================
 
 # In-memory metrics (resets on deploy)
+import datetime
+import time
+import uuid
+from collections import deque
+
+# Startup time
+_startup_time = datetime.datetime.utcnow()
+
+# Metrics
 _metrics = {
     "requests": {"total": 0, "success": 0, "errors": 0},
     "gemini_calls": {"total": 0, "success": 0, "errors": 0, "tokens_in": 0, "tokens_out": 0},
@@ -376,8 +450,29 @@ _metrics = {
     "analyses": {"total": 0, "verified": 0, "issues_found": 0},
     "last_error": None,
     "last_request": None,
-    "startup_time": None,
+    "startup_time": _startup_time.isoformat(),
 }
+
+# Log buffer - keeps last 100 log entries in memory
+_log_buffer: deque = deque(maxlen=100)
+
+def add_log(level: str, event: str, **kwargs):
+    """Add a log entry to the buffer and structlog."""
+    entry = {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "level": level,
+        "event": event,
+        **kwargs
+    }
+    _log_buffer.append(entry)
+    
+    # Also log via structlog
+    if level == "error":
+        logger.error(event, **kwargs)
+    elif level == "warning":
+        logger.warning(event, **kwargs)
+    else:
+        logger.info(event, **kwargs)
 
 def record_metric(category: str, metric: str, value: int = 1):
     """Record a metric increment."""
@@ -504,11 +599,68 @@ async def diagnostics():
 @app.get("/diagnostics/quick")
 async def diagnostics_quick():
     """Quick diagnostics - just returns cached metrics without running tests."""
-    import datetime
     return {
         "timestamp": datetime.datetime.utcnow().isoformat(),
         "metrics": _metrics,
         "version": "0.4.0",
+        "uptime_seconds": (datetime.datetime.utcnow() - _startup_time).total_seconds(),
+    }
+
+
+@app.get("/logs")
+async def get_logs(limit: int = 50, level: Optional[str] = None):
+    """
+    Get recent log entries from the in-memory buffer.
+    
+    Args:
+        limit: Max number of entries to return (default 50, max 100)
+        level: Filter by level (info, warning, error)
+    
+    Returns recent activity for debugging and monitoring.
+    """
+    limit = min(limit, 100)
+    
+    logs = list(_log_buffer)
+    
+    # Filter by level if specified
+    if level:
+        logs = [l for l in logs if l.get("level") == level]
+    
+    # Return most recent first
+    logs = logs[-limit:][::-1]
+    
+    return {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "total_in_buffer": len(_log_buffer),
+        "returned": len(logs),
+        "logs": logs,
+    }
+
+
+@app.get("/logs/errors")
+async def get_error_logs(limit: int = 20):
+    """Get recent error logs only."""
+    logs = [l for l in _log_buffer if l.get("level") == "error"]
+    logs = logs[-limit:][::-1]
+    
+    return {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "total_errors": len([l for l in _log_buffer if l.get("level") == "error"]),
+        "returned": len(logs),
+        "logs": logs,
+    }
+
+
+@app.get("/logs/requests")
+async def get_request_logs(limit: int = 20):
+    """Get recent request logs with timing."""
+    logs = [l for l in _log_buffer if l.get("event") in ["request_started", "request_completed", "request_failed"]]
+    logs = logs[-limit:][::-1]
+    
+    return {
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "returned": len(logs),
+        "logs": logs,
     }
 
 
@@ -564,6 +716,7 @@ async def generate(request: GenerateRequest):
         from google.genai.types import GenerateContentConfig
         
         client = get_gemini_client()
+        start_time = time.time()
         
         config = GenerateContentConfig()
         if request.system_instruction:
@@ -577,13 +730,35 @@ async def generate(request: GenerateRequest):
             config=config
         )
         
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Track token usage if available
+        tokens_in = 0
+        tokens_out = 0
+        if hasattr(response, 'usage_metadata'):
+            tokens_in = getattr(response.usage_metadata, 'prompt_token_count', 0) or 0
+            tokens_out = getattr(response.usage_metadata, 'candidates_token_count', 0) or 0
+        
+        _metrics["gemini_calls"]["total"] += 1
+        _metrics["gemini_calls"]["success"] += 1
+        _metrics["gemini_calls"]["tokens_in"] += tokens_in
+        _metrics["gemini_calls"]["tokens_out"] += tokens_out
+        
+        add_log("info", "gemini_generate",
+                model=get_model_name(),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                duration_ms=round(duration_ms, 2))
+        
         return GenerateResponse(
             text=response.text,
             model=get_model_name(),
         )
         
     except Exception as e:
-        logger.error("generate_error", error=str(e))
+        _metrics["gemini_calls"]["total"] += 1
+        _metrics["gemini_calls"]["errors"] += 1
+        add_log("error", "gemini_generate_error", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -594,6 +769,7 @@ async def chat(request: ChatRequest):
         from google.genai.types import Content, Part, GenerateContentConfig
         
         client = get_gemini_client()
+        start_time = time.time()
         
         # Convert messages to Gemini format
         contents = []
@@ -615,13 +791,36 @@ async def chat(request: ChatRequest):
             config=config
         )
         
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Track token usage
+        tokens_in = 0
+        tokens_out = 0
+        if hasattr(response, 'usage_metadata'):
+            tokens_in = getattr(response.usage_metadata, 'prompt_token_count', 0) or 0
+            tokens_out = getattr(response.usage_metadata, 'candidates_token_count', 0) or 0
+        
+        _metrics["gemini_calls"]["total"] += 1
+        _metrics["gemini_calls"]["success"] += 1
+        _metrics["gemini_calls"]["tokens_in"] += tokens_in
+        _metrics["gemini_calls"]["tokens_out"] += tokens_out
+        
+        add_log("info", "gemini_chat",
+                model=get_model_name(),
+                messages=len(contents),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                duration_ms=round(duration_ms, 2))
+        
         return GenerateResponse(
             text=response.text,
             model=get_model_name(),
         )
         
     except Exception as e:
-        logger.error("chat_error", error=str(e))
+        _metrics["gemini_calls"]["total"] += 1
+        _metrics["gemini_calls"]["errors"] += 1
+        add_log("error", "gemini_chat_error", error=str(e)[:200])
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1362,6 +1561,14 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
     import asyncio
     import httpx
     
+    # Log analysis start
+    analysis_start = time.time()
+    add_log("info", "verified_analysis_started",
+            repo_url=request.repo_url,
+            focus=request.focus,
+            max_issues=request.max_issues_to_verify)
+    _metrics["analyses"]["total"] += 1
+    
     client = get_gemini_client()
     event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     
@@ -1473,8 +1680,24 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
                 data=result.to_dict()
             ))
             
+            # Log completion
+            duration_s = time.time() - analysis_start
+            _metrics["analyses"]["verified"] += result.verified_count
+            _metrics["analyses"]["issues_found"] += result.total_issues
+            
+            add_log("info", "verified_analysis_completed",
+                    repo_url=request.repo_url,
+                    total_issues=result.total_issues,
+                    verified=result.verified_count,
+                    unverified=result.unverified_count,
+                    duration_seconds=round(duration_s, 2))
+            
         except Exception as e:
-            logger.error("verified_analysis_error", error=str(e))
+            duration_s = time.time() - analysis_start
+            add_log("error", "verified_analysis_error",
+                    repo_url=request.repo_url,
+                    error=str(e)[:200],
+                    duration_seconds=round(duration_s, 2))
             event_queue.put_nowait(StreamEvent(
                 type=EventType.ERROR,
                 data={"error": str(e)}
