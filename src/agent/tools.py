@@ -345,3 +345,16 @@ def create_default_tools() -> ToolRegistry:
     registry.register(WriteFileTool())
     
     return registry
+
+
+def create_codebase_analyst_tools() -> ToolRegistry:
+    """Create registry with codebase analysis tools."""
+    from .tools_github import create_github_tools
+    
+    registry = create_default_tools()
+    
+    # Add GitHub/codebase tools
+    for tool in create_github_tools():
+        registry.register(tool)
+    
+    return registry
