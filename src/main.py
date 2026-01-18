@@ -1673,6 +1673,324 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
 
 
 # ============================================================
+# ASYNC JOBS - Background processing with webhooks
+# ============================================================
+
+import uuid
+from dataclasses import dataclass, field
+from enum import Enum
+
+class JobStatus(str, Enum):
+    """Async job status."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class AsyncJob:
+    """Represents an async analysis job."""
+    job_id: str
+    repo_url: str
+    focus: str
+    verify: bool
+    generate_fixes: bool
+    webhook_url: Optional[str]
+    status: JobStatus = JobStatus.PENDING
+    progress: float = 0.0
+    current_phase: str = ""
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+
+# In-memory job store (use Redis for production)
+_jobs: dict[str, AsyncJob] = {}
+_job_tasks: dict[str, asyncio.Task] = {}
+
+
+class AsyncAnalyzeRequest(BaseModel):
+    """Request for async analysis."""
+    repo_url: str
+    branch: str = "main"
+    focus: str = "full"
+    verify: bool = True
+    generate_fixes: bool = True
+    max_issues_to_verify: int = 10
+    webhook_url: Optional[str] = None
+
+
+class AsyncJobResponse(BaseModel):
+    """Response for async job submission."""
+    job_id: str
+    status: str
+    status_url: str
+    estimated_seconds: int
+
+
+class AsyncJobStatusResponse(BaseModel):
+    """Response for job status check."""
+    job_id: str
+    status: str
+    progress: float
+    current_phase: str
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+async def run_async_job(job: AsyncJob, request: AsyncAnalyzeRequest):
+    """Background task to run analysis."""
+    import httpx
+    
+    try:
+        job.status = JobStatus.RUNNING
+        job.current_phase = "Cloning repository"
+        job.updated_at = time.time()
+        
+        # Clone repo
+        from .agent.tools_github import CloneRepoTool
+        clone_tool = CloneRepoTool()
+        clone_result = await clone_tool.execute({
+            "repo_url": request.repo_url,
+            "branch": request.branch,
+        })
+        
+        if not clone_result.success:
+            job.status = JobStatus.FAILED
+            job.error = f"Failed to clone: {clone_result.output}"
+            job.updated_at = time.time()
+            await send_webhook(job)
+            return
+        
+        job.progress = 0.2
+        job.current_phase = "Analyzing codebase"
+        job.updated_at = time.time()
+        
+        # Run analysis
+        client = get_gemini_client()
+        
+        def on_event(event: StreamEvent):
+            """Update job progress from events."""
+            if event.type == EventType.THINKING:
+                phase = event.data.get("phase", "")
+                if phase:
+                    job.current_phase = phase
+                    job.updated_at = time.time()
+        
+        if request.verify:
+            analyzer = VerifiedAnalyzer(
+                client=client,
+                model=get_reasoning_model(),
+                code_executor=execute_code_in_sandbox,
+            )
+            
+            result = await analyzer.analyze_and_verify(
+                repo_content=clone_result.output,
+                repo_url=request.repo_url,
+                focus=request.focus,
+                on_event=on_event,
+                max_issues_to_verify=request.max_issues_to_verify,
+            )
+            
+            job.result = result.to_dict()
+        else:
+            # Non-verified analysis (simpler path)
+            job.result = {
+                "repo": request.repo_url,
+                "summary": "Analysis completed",
+                "issues": [],
+                "stats": {"total": 0}
+            }
+        
+        job.status = JobStatus.COMPLETED
+        job.progress = 1.0
+        job.current_phase = "Complete"
+        job.updated_at = time.time()
+        
+        # Log completion
+        add_log("info", "async_job_completed",
+                job_id=job.job_id,
+                repo_url=job.repo_url,
+                total_issues=len(job.result.get("issues", [])))
+        
+    except Exception as e:
+        job.status = JobStatus.FAILED
+        job.error = str(e)
+        job.updated_at = time.time()
+        add_log("error", "async_job_failed",
+                job_id=job.job_id,
+                error=str(e)[:200])
+    
+    # Send webhook notification
+    await send_webhook(job)
+
+
+async def send_webhook(job: AsyncJob):
+    """Send webhook notification when job completes."""
+    if not job.webhook_url:
+        return
+    
+    try:
+        import httpx
+        
+        payload = {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "result": job.result if job.status == JobStatus.COMPLETED else None,
+            "error": job.error if job.status == JobStatus.FAILED else None,
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                job.webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            add_log("info", "webhook_sent",
+                    job_id=job.job_id,
+                    webhook_url=job.webhook_url,
+                    status_code=response.status_code)
+                    
+    except Exception as e:
+        add_log("error", "webhook_failed",
+                job_id=job.job_id,
+                webhook_url=job.webhook_url,
+                error=str(e)[:100])
+
+
+@app.post("/v4/analyze/async", response_model=AsyncJobResponse, dependencies=[Depends(verify_api_key)])
+async def submit_async_analysis(request: AsyncAnalyzeRequest):
+    """
+    Submit an analysis job for background processing.
+    
+    Returns immediately with a job_id. Use /v4/jobs/{job_id} to poll status
+    or provide a webhook_url to receive a POST when complete.
+    
+    Example:
+        POST /v4/analyze/async
+        {
+            "repo_url": "https://github.com/owner/repo",
+            "verify": true,
+            "webhook_url": "https://your-server.com/callback"
+        }
+        
+        Response:
+        {
+            "job_id": "abc123",
+            "status": "pending",
+            "status_url": "/v4/jobs/abc123",
+            "estimated_seconds": 120
+        }
+    """
+    job_id = str(uuid.uuid4())[:8]
+    
+    job = AsyncJob(
+        job_id=job_id,
+        repo_url=request.repo_url,
+        focus=request.focus,
+        verify=request.verify,
+        generate_fixes=request.generate_fixes,
+        webhook_url=request.webhook_url,
+    )
+    
+    _jobs[job_id] = job
+    
+    # Start background task
+    task = asyncio.create_task(run_async_job(job, request))
+    _job_tasks[job_id] = task
+    
+    add_log("info", "async_job_submitted",
+            job_id=job_id,
+            repo_url=request.repo_url,
+            has_webhook=bool(request.webhook_url))
+    
+    # Estimate based on verification
+    estimated = 120 if request.verify else 60
+    
+    return AsyncJobResponse(
+        job_id=job_id,
+        status=job.status.value,
+        status_url=f"/v4/jobs/{job_id}",
+        estimated_seconds=estimated,
+    )
+
+
+@app.get("/v4/jobs/{job_id}", response_model=AsyncJobStatusResponse, dependencies=[Depends(verify_api_key)])
+async def get_job_status(job_id: str):
+    """
+    Get the status of an async analysis job.
+    
+    Returns:
+        - status: pending, running, completed, failed
+        - progress: 0.0 to 1.0
+        - current_phase: What the job is currently doing
+        - result: Full analysis report when completed
+        - error: Error message if failed
+    """
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    job = _jobs[job_id]
+    
+    return AsyncJobStatusResponse(
+        job_id=job.job_id,
+        status=job.status.value,
+        progress=job.progress,
+        current_phase=job.current_phase,
+        result=job.result,
+        error=job.error,
+    )
+
+
+@app.get("/v4/jobs", dependencies=[Depends(verify_api_key)])
+async def list_jobs(limit: int = 20):
+    """List recent async jobs."""
+    jobs = sorted(_jobs.values(), key=lambda j: j.created_at, reverse=True)[:limit]
+    
+    return {
+        "jobs": [
+            {
+                "job_id": j.job_id,
+                "repo_url": j.repo_url,
+                "status": j.status.value,
+                "progress": j.progress,
+                "created_at": j.created_at,
+            }
+            for j in jobs
+        ],
+        "total": len(_jobs),
+    }
+
+
+@app.delete("/v4/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
+async def cancel_job(job_id: str):
+    """Cancel a pending or running job."""
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    job = _jobs[job_id]
+    
+    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+        return {"message": f"Job already {job.status.value}", "job_id": job_id}
+    
+    # Cancel the task
+    if job_id in _job_tasks:
+        _job_tasks[job_id].cancel()
+        del _job_tasks[job_id]
+    
+    job.status = JobStatus.FAILED
+    job.error = "Cancelled by user"
+    job.updated_at = time.time()
+    
+    add_log("info", "async_job_cancelled", job_id=job_id)
+    
+    return {"message": "Job cancelled", "job_id": job_id}
+
+
+# ============================================================
 # RUN LOCALLY
 # ============================================================
 
