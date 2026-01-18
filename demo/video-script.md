@@ -1,87 +1,97 @@
 # Demo Video Script (~3 minutes)
 
-> **Judging Note:** Presentation/Demo is worth 10% of the score. Judges may not watch beyond 3 minutes.
+## Opening (0:00 - 0:20)
 
-## Structure (180 seconds total)
+**[Show: Title card with project name]**
 
-### 1. Hook & Problem (30 seconds)
-```
-"Have you ever [describe the problem]?"
-"Today I'm showing you [Project Name], which uses Gemini 3 to [solution]."
-```
+> "What if AI could not only find bugs in your code—but prove they exist?"
+>
+> "I'm going to show you Verified Codebase Analyst, powered by Gemini 3's 2-million token context window."
 
-**Tips:**
-- Start with the problem, not the solution
-- Make it relatable
-- Show, don't tell
+## The Problem (0:20 - 0:40)
 
-### 2. Demo the Core Feature (90 seconds)
-```
-"Let me show you how it works..."
-[Walk through the main user flow]
-[Show Gemini 3 in action - the "wow" moment]
-```
+**[Show: Screenshot of typical static analysis with many warnings]**
 
-**Tips:**
-- Focus on the ONE most impressive feature
-- Show real usage, not slides
-- Highlight the Gemini 3 integration visibly
+> "Traditional code analyzers produce endless false positives. Developers waste hours investigating issues that aren't real."
+>
+> "What if the AI could verify its findings before reporting them?"
 
-### 3. How Gemini 3 Powers It (30 seconds)
-```
-"Under the hood, this uses Gemini 3's [specific capability]..."
-"This wouldn't be possible without [Gemini 3 feature]..."
-```
+## The Solution (0:40 - 1:00)
 
-**Tips:**
-- Briefly explain the technical integration
-- Reference specific Gemini 3 features used
-- Keep it accessible to non-technical judges
+**[Show: Architecture diagram]**
 
-### 4. Impact & Future (20 seconds)
-```
-"This could help [target users] by [benefit]..."
-"Next, I plan to [future development]..."
-```
+> "Verified Codebase Analyst takes a different approach:
+> 1. Load the ENTIRE codebase into Gemini 3's context
+> 2. Identify potential issues
+> 3. Generate tests that would FAIL if the bug exists
+> 4. Execute those tests
+> 5. Only report VERIFIED bugs with AI-generated fixes"
 
-### 5. Call to Action (10 seconds)
-```
-"Try it yourself at [demo URL]"
-"Check out the code at [GitHub URL]"
-```
+## Live Demo (1:00 - 2:20)
+
+**[Show: Frontend UI]**
+
+> "Let me show you this in action."
+
+**[Action: Paste a GitHub repo URL, select 'bugs' focus, enable 'Verify Findings']**
+
+> "I'll analyze this open-source project for bugs."
+
+**[Action: Click 'Analyze & Verify']**
+
+> "Watch the live progress..."
+
+**[Show: Observability panel updating in real-time]**
+
+> "You can see:
+> - Issues being discovered with severity levels
+> - Tests being generated for each issue  
+> - Verification status updating—VERIFIED means the test failed, proving the bug exists"
+
+**[Wait for completion, show results]**
+
+> "Here are the results. Let's look at a verified issue..."
+
+**[Action: Expand a verified issue card]**
+
+> "This critical bug was verified. Here's:
+> - The problematic code
+> - The test that confirmed it
+> - And most importantly—the AI-generated fix we can apply"
+
+**[Action: Click 'Copy Fix' button]**
+
+> "One click and the fix is ready to paste."
+
+## Technical Highlights (2:20 - 2:45)
+
+**[Show: Diagnostics endpoint]**
+
+> "Under the hood:
+> - Gemini 3 Pro Preview handles the reasoning
+> - E2B sandboxes execute tests safely
+> - Full observability for debugging
+> - SSE streaming for real-time updates"
+
+**[Show: /diagnostics response]**
+
+> "Every component is monitored with latency tracking."
+
+## Closing (2:45 - 3:00)
+
+**[Show: Title card with URLs]**
+
+> "This is Vibe Engineering—AI that verifies its own work."
+>
+> "Verified Codebase Analyst. Try it at the link below."
+>
+> "Thank you."
 
 ---
 
-## Recording Tips
+## Recording Notes
 
-### Technical
-- [ ] 1080p resolution minimum
-- [ ] Good audio quality (use a microphone)
-- [ ] Stable internet for live demo
-- [ ] Have backup video of demo in case of failures
-
-### Content
-- [ ] Practice 2-3 times before recording
-- [ ] Keep under 3 minutes (judges may stop watching)
-- [ ] Show your face briefly (builds connection)
-- [ ] Use screen recording with zoom on important areas
-
-### Common Mistakes to Avoid
-- ❌ Starting with "Hi, my name is..." (wastes time)
-- ❌ Reading from a script robotically
-- ❌ Showing code for too long
-- ❌ Technical jargon without explanation
-- ❌ No clear problem statement
-
----
-
-## Example Opening Lines
-
-**For a productivity tool:**
-> "Every day, millions of people waste hours on [task]. I built [Project] to do it in seconds with Gemini 3."
-
-**For a creative tool:**
-> "What if you could [creative capability] just by describing it? Watch this."
-
-**For a technical tool:**
-> "Developers spend 40% of their time on [problem]. [Project] uses Gemini 3 to solve this instantly."
+- Use a repo known to have bugs for impressive demo
+- Prepare fallback screenshots in case of API issues
+- Keep terminal visible to show SSE events if needed
+- Have architecture diagram ready as backup visual

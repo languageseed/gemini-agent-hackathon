@@ -1,189 +1,148 @@
-# Gemini Agent
+# Verified Codebase Analyst
 
-A Gemini-powered agent with tool calling capabilities for the [Gemini 3 Hackathon](https://gemini3.devpost.com/).
+**Gemini 3 Hackathon Entry** | [Live Demo](https://gemini-frontend-murex.vercel.app) | [API Docs](https://gemini-agent-hackathon-production.up.railway.app/docs)
+
+> **"AI that proves bugs exist before reporting them."**
+
+An AI-powered code analyzer that uses Gemini 3's 2-million token context window to analyze entire codebases and **verify** findings through automated test generation.
+
+## The Vibe Engineering Approach
+
+Traditional static analysis produces false positives. We take a different approach:
+
+1. **Analyze** - Load entire codebase into Gemini 3 (2M context)
+2. **Extract** - Identify bugs, security issues, performance problems
+3. **Verify** - Generate Python tests that FAIL if the bug exists
+4. **Execute** - Run tests in E2B sandboxes
+5. **Fix** - Generate AI fixes for verified bugs
+
+**Result:** Only report issues we can PROVE exist.
 
 ## Features
 
-- **Gemini 3 Integration** - Uses latest Gemini API with function calling
-- **Agentic Loop** - Multi-turn execution with tool calling
-- **Tool Framework** - Extensible tool definitions
-- **Streaming Support** - SSE for real-time responses
-- **Production Ready** - FastAPI with Railway deployment
+| Feature | Description |
+|---------|-------------|
+| **Whole-Codebase Analysis** | No chunking or RAG - full context understanding |
+| **Automated Verification** | Tests generated and executed to confirm bugs |
+| **AI-Generated Fixes** | One-click fixes for verified issues |
+| **Real-Time Streaming** | SSE for live progress updates |
+| **Full Observability** | Logs, metrics, diagnostics endpoints |
 
 ## Quick Start
 
-### 1. Set up environment
+### Try the Demo
+
+Visit [gemini-frontend-murex.vercel.app](https://gemini-frontend-murex.vercel.app)
+
+1. Enter a GitHub repository URL
+2. Select focus (bugs, security, performance, etc.)
+3. Enable "Verify Findings"
+4. Watch issues get discovered and verified in real-time
+
+### Run Locally
 
 ```bash
-# Copy environment template
+# Clone
+git clone https://github.com/languageseed/gemini-agent-hackathon.git
+cd gemini-agent-hackathon
+
+# Setup
 cp env.example .env
+# Add GEMINI_API_KEY to .env
 
-# Edit .env and add your API key
-# Get key from: https://aistudio.google.com/apikey
-```
-
-### 2. Install dependencies
-
-```bash
+# Install
 pip install -r requirements.txt
-```
 
-### 3. Run locally
-
-```bash
+# Run
 uvicorn src.main:app --reload
-```
-
-### 4. Test the API
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Simple generation
-curl -X POST http://localhost:8000/generate \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Hello, what can you do?"}'
-
-# Agent with tools
-curl -X POST http://localhost:8000/agent \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "What time is it? Then calculate 42 * 17."}'
 ```
 
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | API info |
-| `/health` | GET | Health check |
-| `/generate` | POST | Simple text generation |
-| `/chat` | POST | Multi-turn chat |
-| `/agent` | POST | **Agent with tool calling** |
-| `/tools` | GET | List available tools |
+| `/health` | GET | Health check with version and capabilities |
+| `/diagnostics` | GET | Full component health checks |
+| `/logs` | GET | Recent activity buffer |
+| `/v4/analyze/verified/stream` | POST | **Main endpoint** - Verified analysis with SSE |
 
-## Adding Tools
-
-Edit `src/main.py` to add your own tools:
-
-```python
-# 1. Define the tool schema
-TOOLS = [
-    {
-        "name": "your_tool",
-        "description": "What this tool does",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "param1": {"type": "string", "description": "..."}
-            },
-            "required": ["param1"]
-        }
-    },
-    # ... existing tools
-]
-
-# 2. Implement the tool execution
-async def execute_tool(name: str, arguments: dict) -> str:
-    if name == "your_tool":
-        # Your implementation
-        return "result"
-    # ... existing tools
-```
-
-## Deployment
-
-### Railway
+### Example Request
 
 ```bash
-# Login to Railway
-railway login
-
-# Initialize project
-railway init
-
-# Add PostgreSQL (optional)
-railway add --plugin postgresql
-
-# Add Redis (optional)
-railway add --plugin redis
-
-# Deploy
-railway up
-
-# Set environment variables
-railway variables set GOOGLE_API_KEY=your_key
+curl -X POST https://gemini-agent-hackathon-production.up.railway.app/v4/analyze/verified/stream \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_KEY" \
+  -d '{
+    "repo_url": "https://github.com/user/repo",
+    "focus": "bugs",
+    "max_issues_to_verify": 10
+  }'
 ```
-
-### Vercel (Frontend Only)
-
-The API should run on Railway. Deploy a frontend to Vercel that calls the Railway API.
 
 ## Architecture
 
+See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    FastAPI Server                       │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  /agent endpoint                                        │
-│       │                                                 │
-│       ▼                                                 │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │            Agentic Loop                          │   │
-│  │                                                  │   │
-│  │  1. Send prompt + tools to Gemini               │   │
-│  │  2. If tool calls → execute tools               │   │
-│  │  3. Send results back to Gemini                 │   │
-│  │  4. Repeat until done or max iterations         │   │
-│  │                                                  │   │
-│  └─────────────────────────────────────────────────┘   │
-│       │                                                 │
-│       ▼                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
-│  │    Tool 1   │  │    Tool 2   │  │    Tool N   │    │
-│  │ get_time    │  │  calculate  │  │ search_web  │    │
-│  └─────────────┘  └─────────────┘  └─────────────┘    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-                  ┌───────────────┐
-                  │  Gemini API   │
-                  │  (Cloud)      │
-                  └───────────────┘
+Frontend (Vercel)      Backend (Railway)         External Services
+┌──────────────┐      ┌────────────────────┐    ┌─────────────────┐
+│  SvelteKit   │─────▶│  FastAPI v0.5.0    │───▶│  Gemini 3 Pro   │
+│  Live UI     │ SSE  │  VerifiedAnalyzer  │    │  2M Context     │
+└──────────────┘      │  Observability     │    ├─────────────────┤
+                      └────────────────────┘───▶│  E2B Sandbox    │
+                                                │  Code Execution │
+                                                ├─────────────────┤
+                                                │  GitHub API     │
+                                                │  Clone Repos    │
+                                                └─────────────────┘
 ```
+
+## Tech Stack
+
+- **Frontend:** SvelteKit, TailwindCSS, Lucide Icons
+- **Backend:** FastAPI, Python 3.11, structlog
+- **AI:** Gemini 3 Pro Preview (gemini-3-pro-preview)
+- **Execution:** E2B Code Interpreter
+- **Hosting:** Vercel (frontend), Railway (backend)
+- **Secrets:** Doppler
+
+## Hackathon Submission
+
+### Track: Vibe Engineering
+
+> "Agents that write AND verify code"
+
+This project implements the complete Vibe Engineering loop:
+- **Write:** Gemini identifies issues and writes tests
+- **Verify:** Tests are executed to confirm findings
+- **Fix:** AI generates fixes for verified bugs
+
+### Judging Criteria
+
+| Criteria | Weight | How We Score |
+|----------|--------|--------------|
+| Technical Execution | 40% | Deep Gemini 3 integration, 2M context, verification loop |
+| Innovation | 30% | Novel approach: AI that proves its own findings |
+| Impact | 20% | Reduces false positives, saves developer time |
+| Presentation | 10% | Live demo, architecture docs, video script |
+
+### Submission Materials
+
+- [x] [200-word description](docs/submission-description.md)
+- [x] [Demo URL](https://gemini-frontend-murex.vercel.app)
+- [x] [GitHub Repository](https://github.com/languageseed/gemini-agent-hackathon)
+- [x] [Video Script](demo/video-script.md)
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GOOGLE_API_KEY` | Yes | Gemini API key from AI Studio |
-| `GEMINI_MODEL` | No | Model name (default: gemini-3-flash-preview) |
-| `PORT` | No | Server port (default: 8000) |
-| `DEBUG` | No | Enable debug mode (default: false) |
-| `DATABASE_URL` | No | PostgreSQL connection (Railway provides) |
-| `REDIS_URL` | No | Redis connection (Railway provides) |
-
-## Hackathon Submission
-
-### Judging Criteria
-
-| Criteria | Weight | How This Project Scores |
-|----------|--------|------------------------|
-| Technical Execution | 40% | Deep Gemini integration with tool calling |
-| Innovation | 30% | Autonomous agent, not a wrapper |
-| Impact | 20% | Extensible platform for real tasks |
-| Presentation | 10% | Clear architecture, demo-ready |
-
-### Submission Checklist
-
-- [ ] ~200 word Gemini integration description
-- [ ] Public demo URL (Railway)
-- [ ] Public GitHub repository
-- [ ] ~3 minute demo video
+| `GEMINI_API_KEY` | Yes | Gemini API key |
+| `E2B_API_KEY` | Yes | E2B sandbox key |
+| `API_SECRET_KEY` | Yes | Backend auth key |
+| `GEMINI_MODEL` | No | Default model (gemini-2.0-flash) |
+| `GEMINI_REASONING_MODEL` | No | Reasoning model (gemini-3-pro-preview) |
 
 ## License
 
-MIT - Hackathon Project
-# Trigger redeploy Sun Jan 18 06:48:49 AWST 2026
+MIT - Gemini 3 Hackathon Project
