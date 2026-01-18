@@ -459,6 +459,11 @@ async def health():
             "verified_analysis",
             "auto_fix_suggestions",
         ],
+        # Configuration status for frontend pre-flight checks
+        "config": {
+            "e2b_configured": bool(os.environ.get("E2B_API_KEY")),
+            "gemini_configured": bool(os.environ.get("GEMINI_API_KEY")),
+        },
     }
 
 

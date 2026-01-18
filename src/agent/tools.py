@@ -233,17 +233,38 @@ async def execute_code_in_sandbox(code: str, timeout: int = 30) -> tuple[bool, s
     """
     Shared E2B code execution function.
     
+    Args:
+        code: Python code to execute
+        timeout: Execution timeout in seconds (default 30, max 300)
+    
     Returns:
         (success: bool, output: str)
     """
+    import asyncio
+    import concurrent.futures
+    
     api_key = os.environ.get("E2B_API_KEY")
+    timeout = min(timeout, 300)  # Cap at 5 minutes
     
     if api_key:
         try:
             from e2b_code_interpreter import Sandbox
             
-            with Sandbox.create() as sandbox:
-                execution = sandbox.run_code(code)
+            def run_in_sandbox():
+                """Synchronous function to run in executor."""
+                with Sandbox.create() as sandbox:
+                    return sandbox.run_code(code)
+            
+            # Run synchronous E2B code in thread pool with timeout
+            loop = asyncio.get_event_loop()
+            try:
+                execution = await asyncio.wait_for(
+                    loop.run_in_executor(None, run_in_sandbox),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning("e2b_timeout", timeout=timeout)
+                return False, f"ERROR: TimeoutError: Execution timed out after {timeout}s"
                 
                 output_parts = []
                 if hasattr(execution, 'text') and execution.text:
