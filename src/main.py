@@ -20,6 +20,7 @@ Last deploy trigger: 2026-01-18
 """
 
 import os
+import json
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Optional, List
@@ -866,6 +867,126 @@ Path filter: {request.path_filter or 'all files'}
     except Exception as e:
         logger.error("analyze_repo_error", error=str(e), repo=request.repo_url)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v3/analyze/stream", dependencies=[Depends(verify_api_key)])
+async def analyze_repository_stream(request: AnalyzeRepoRequest):
+    """
+    Analyze a GitHub repository with real-time SSE streaming.
+    
+    Streams progress events:
+    - start: Analysis started
+    - thinking: Agent is reasoning
+    - tool_start: Tool execution started (e.g., "Cloning repo...")
+    - tool_result: Tool completed with output
+    - token: Text being generated
+    - done: Analysis complete with full results
+    - error: Error occurred
+    """
+    import asyncio
+    
+    agent = get_codebase_agent()
+    
+    # Build the analysis task
+    focus_prompts = {
+        "bugs": "Focus on finding potential bugs, logic errors, edge cases, and error handling issues.",
+        "security": "Focus on security vulnerabilities, injection risks, authentication issues, and data exposure.",
+        "performance": "Focus on performance bottlenecks, inefficient algorithms, and resource management.",
+        "architecture": "Focus on code structure, design patterns, modularity, and maintainability.",
+        "all": "Perform a comprehensive analysis covering bugs, security, performance, and architecture."
+    }
+    
+    focus_instruction = focus_prompts.get(request.focus, focus_prompts["all"])
+    
+    task = f"""Analyze the GitHub repository: {request.repo_url}
+
+{focus_instruction}
+
+Steps:
+1. Clone and load the repository
+2. Review the codebase structure
+3. Perform detailed analysis based on the focus area
+4. Identify specific issues with file locations and line numbers where possible
+5. Provide actionable recommendations with code examples
+6. Summarize findings with severity ratings (critical, high, medium, low)
+
+Repository: {request.repo_url}
+Branch: {request.branch or 'default'}
+Path filter: {request.path_filter or 'all files'}
+"""
+    
+    # Use asyncio.Queue for real-time streaming
+    event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+    
+    def on_event(event: StreamEvent):
+        """Callback to push events to queue."""
+        event_queue.put_nowait(event)
+    
+    async def run_agent():
+        """Run agent in background and push completion."""
+        try:
+            result = await agent.run(
+                task=task,
+                session_id=request.session_id,
+                on_event=on_event,
+            )
+            
+            # Extract metrics
+            files_analyzed = sum(1 for tc in result.tool_calls if tc.get("name") == "clone_repo") * 10
+            issue_keywords = ["bug", "issue", "vulnerability", "error", "problem", "warning"]
+            issues_found = sum(result.text.lower().count(kw) for kw in issue_keywords)
+            
+            # Push final result
+            event_queue.put_nowait(StreamEvent(
+                type=EventType.DONE,
+                data={
+                    "analysis": result.text,
+                    "repo_url": request.repo_url,
+                    "files_analyzed": files_analyzed or 10,
+                    "issues_found": min(issues_found, 50),
+                    "tool_calls": result.tool_calls,
+                    "iterations": result.iterations,
+                    "session_id": result.session_id,
+                    "completed": result.completed,
+                }
+            ))
+        except Exception as e:
+            event_queue.put_nowait(StreamEvent(
+                type=EventType.ERROR,
+                data={"error": str(e)}
+            ))
+    
+    async def event_generator():
+        """Generate SSE events."""
+        # Start agent in background
+        agent_task = asyncio.create_task(run_agent())
+        
+        try:
+            while True:
+                try:
+                    # Wait for event with timeout
+                    event = await asyncio.wait_for(event_queue.get(), timeout=120.0)
+                    yield event.to_sse()
+                    
+                    # Stop on done or error
+                    if event.type in (EventType.DONE, EventType.ERROR):
+                        break
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep connection alive
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            if not agent_task.done():
+                agent_task.cancel()
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 @app.get("/v3/tools")
