@@ -164,7 +164,7 @@ def classify_test_result(success: bool, output: str, error_info: str = None) -> 
     if success:
         return VerificationResult("passed", output)
     
-    # Check for assertion failures (these are VERIFIED bugs)
+    # Check for assertion failures or explicit test failures (these are VERIFIED bugs)
     assertion_patterns = [
         "assertionerror",
         "assert ",
@@ -172,6 +172,13 @@ def classify_test_result(success: bool, output: str, error_info: str = None) -> 
         "expected",
         "!=",
         "not equal",
+        "systemexit: 1",     # sys.exit(1) = test failed = bug verified
+        "systemexit(1)",
+        "exit(1)",
+        "fail:",             # Common test failure prefix
+        "test failed",
+        "bug exists",
+        "vulnerability",
     ]
     if any(p in combined for p in assertion_patterns):
         return VerificationResult(
