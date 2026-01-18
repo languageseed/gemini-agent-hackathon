@@ -486,13 +486,17 @@ async def diagnostics():
     }
     results["checks"]["environment"] = env_status
     
-    # Overall status
-    all_ok = (
-        gemini_status["status"] == "ok" and
-        (e2b_status["status"] in ["ok", "not_configured", "not_installed"]) and
-        session_status["status"] == "ok"
-    )
-    results["overall"] = "healthy" if all_ok else "degraded"
+    # Overall status - Gemini is required, E2B and Redis are optional
+    gemini_ok = gemini_status["status"] == "ok"
+    e2b_ok = e2b_status["status"] in ["ok", "configured", "not_configured", "not_installed"]
+    session_ok = session_status["status"] == "ok"
+    
+    if gemini_ok and session_ok:
+        results["overall"] = "healthy"
+    elif gemini_ok:
+        results["overall"] = "degraded"  # Can still work, but with issues
+    else:
+        results["overall"] = "unhealthy"  # Gemini is required
     
     return results
 
