@@ -36,7 +36,8 @@ class ThinkingLevel(str, Enum):
 class AgentConfig:
     """Agent configuration."""
     model: str = "gemini-2.0-flash"
-    max_iterations: int = 15
+    max_iterations: int = 100  # High limit, time is the real constraint
+    timeout_seconds: float = 600.0  # 10 minutes default, can be hours for marathon tasks
     default_thinking_level: ThinkingLevel = ThinkingLevel.LOW
     system_instruction: str = """You are an autonomous agent that completes tasks step by step.
 
@@ -160,16 +161,21 @@ class MarathonAgent:
         
         all_tool_calls = []
         iterations = 0
+        start_time = asyncio.get_event_loop().time()
+        
+        def time_remaining() -> float:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            return self.config.timeout_seconds - elapsed
         
         # Emit start event
         if on_event:
             on_event(StreamEvent(
                 type=EventType.START,
-                data={"task": task, "session_id": session.id}
+                data={"task": task, "session_id": session.id, "timeout_seconds": self.config.timeout_seconds}
             ))
         
         try:
-            while iterations < self.config.max_iterations:
+            while iterations < self.config.max_iterations and time_remaining() > 0:
                 iterations += 1
                 
                 # Select thinking level dynamically
@@ -299,15 +305,24 @@ class MarathonAgent:
                 if self.sessions:
                     await self.sessions.save(session)
             
-            # Max iterations reached
+            # Limit reached (time or iterations)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            timeout_reached = time_remaining() <= 0
+            
             if on_event:
                 on_event(StreamEvent(
                     type=EventType.DONE,
-                    data={"iterations": iterations, "max_reached": True}
+                    data={
+                        "iterations": iterations, 
+                        "max_reached": True,
+                        "timeout_reached": timeout_reached,
+                        "elapsed_seconds": round(elapsed, 2),
+                    }
                 ))
             
+            reason = "Timeout reached" if timeout_reached else "Max iterations reached"
             return AgentResult(
-                text="Max iterations reached. Task may be incomplete.",
+                text=f"{reason}. Task may be incomplete.",
                 tool_calls=all_tool_calls,
                 iterations=iterations,
                 session_id=session.id,

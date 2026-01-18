@@ -158,7 +158,16 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
         # Use GitHub API to get repo contents (no git clone needed)
         # This is faster and works without git installed
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # Build headers with optional auth
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"token {github_token}"
+            logger.info("github_authenticated", rate_limit="5000/hr")
+        else:
+            logger.warning("github_unauthenticated", rate_limit="60/hr")
+        
+        async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
             # Get default branch if not specified
             if not branch:
                 repo_info = await client.get(
@@ -316,60 +325,8 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
         return "\n".join(tree)
 
 
-class AnalyzeCodeTool(Tool):
-    """Analyze code for patterns, bugs, and improvements."""
-    
-    name = "analyze_code"
-    description = """Analyze code content for:
-- Architecture patterns
-- Potential bugs or issues
-- Code quality metrics
-- Improvement suggestions
-- Security vulnerabilities
-
-Use after clone_repo to perform deep analysis."""
-    
-    parameters = {
-        "type": "object",
-        "properties": {
-            "code": {
-                "type": "string",
-                "description": "Code content to analyze"
-            },
-            "focus": {
-                "type": "string",
-                "description": "Analysis focus: 'bugs', 'security', 'performance', 'style', 'all'",
-                "enum": ["bugs", "security", "performance", "style", "all"]
-            }
-        },
-        "required": ["code"]
-    }
-    
-    async def execute(self, arguments: dict) -> ToolResult:
-        code = arguments.get("code", "")
-        focus = arguments.get("focus", "all")
-        
-        # This tool is primarily for the LLM to use its reasoning
-        # We just format the request appropriately
-        
-        analysis_prompt = f"""Analyze the following code with focus on: {focus}
-
-Provide:
-1. Summary of what the code does
-2. Identified issues (bugs, anti-patterns, vulnerabilities)
-3. Specific improvement suggestions with code examples
-4. Quality score (1-10)
-
-Code to analyze:
-```
-{code[:50000]}  # Limit to 50K chars
-```
-"""
-        
-        return ToolResult(
-            output=f"Analysis request prepared for focus: {focus}. Code length: {len(code)} chars.",
-            success=True
-        )
+# AnalyzeCodeTool removed - was a stub that just returned placeholder text.
+# Use VerifiedAnalyzer for real analysis.
 
 
 class GenerateTestsTool(Tool):
@@ -414,6 +371,5 @@ def create_github_tools() -> list[Tool]:
     """Create GitHub-related tools."""
     return [
         CloneRepoTool(),
-        AnalyzeCodeTool(),
         GenerateTestsTool(),
     ]

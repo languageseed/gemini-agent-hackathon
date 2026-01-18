@@ -5,7 +5,7 @@ Minimal, powerful agent leveraging Gemini 3 native capabilities.
 """
 
 from .core import MarathonAgent, AgentConfig, AgentResult
-from .tools import ToolRegistry, ToolResult
+from .tools import ToolRegistry, ToolResult, execute_code_in_sandbox
 from .session import SessionStore, Session
 from .stream import StreamEvent, EventType, EventCollector
 from .verified_analysis import (
@@ -23,6 +23,7 @@ __all__ = [
     "AgentResult",
     "ToolRegistry",
     "ToolResult",
+    "execute_code_in_sandbox",
     "SessionStore",
     "Session",
     "StreamEvent",

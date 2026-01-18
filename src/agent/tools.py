@@ -112,34 +112,77 @@ class CalculateTool(Tool):
             return ToolResult(output=f"Error evaluating '{expr}': {e}", success=False)
 
 
-class WebSearchTool(Tool):
-    """Search the web for information."""
-    
-    name = "web_search"
-    description = "Search the web for current information on any topic"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query"
-            }
-        },
-        "required": ["query"]
-    }
-    
-    async def execute(self, arguments: dict) -> ToolResult:
-        query = arguments.get("query", "")
-        # TODO: Integrate with actual search API (e.g., Serper, SerpAPI, Tavily)
-        return ToolResult(
-            output=f"[Web search for '{query}' - implement with search API]",
-            success=True
-        )
+# WebSearchTool removed - was a stub. Add real implementation when needed.
 
 
 # ============================================================
 # E2B CODE EXECUTION
 # ============================================================
+
+async def execute_code_in_sandbox(code: str, timeout: int = 30) -> tuple[bool, str]:
+    """
+    Shared E2B code execution function.
+    
+    Returns:
+        (success: bool, output: str)
+    """
+    api_key = os.environ.get("E2B_API_KEY")
+    
+    if api_key:
+        try:
+            from e2b_code_interpreter import Sandbox
+            
+            with Sandbox.create() as sandbox:
+                execution = sandbox.run_code(code)
+                
+                output_parts = []
+                if hasattr(execution, 'text') and execution.text:
+                    output_parts.append(execution.text)
+                elif hasattr(execution, 'logs'):
+                    if execution.logs.stdout:
+                        output_parts.append(execution.logs.stdout)
+                    if execution.logs.stderr:
+                        output_parts.append(f"STDERR: {execution.logs.stderr}")
+                
+                if hasattr(execution, 'error') and execution.error:
+                    error_msg = str(execution.error)
+                    if hasattr(execution.error, 'name'):
+                        error_msg = f"{execution.error.name}: {execution.error.value}"
+                    return False, f"ERROR: {error_msg}"
+                
+                return True, "\n".join(output_parts) or "Success (no output)"
+                
+        except Exception as e:
+            logger.warning("e2b_fallback", error=str(e))
+    
+    # Local fallback (development only)
+    if os.environ.get("ALLOW_LOCAL_EXEC", "false").lower() == "true":
+        return await _execute_local(code, timeout)
+    
+    return False, "E2B_API_KEY not set and local execution disabled"
+
+
+async def _execute_local(code: str, timeout: int) -> tuple[bool, str]:
+    """Local execution fallback - only for development."""
+    import io
+    import sys
+    from contextlib import redirect_stdout, redirect_stderr
+    
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    
+    try:
+        namespace = {"__builtins__": __builtins__}
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+            exec(code, namespace)
+        
+        stdout = stdout_capture.getvalue()
+        stderr = stderr_capture.getvalue()
+        return True, stdout + (f"\nSTDERR: {stderr}" if stderr else "") or "Success"
+        
+    except Exception as e:
+        return False, f"Error: {type(e).__name__}: {str(e)}"
+
 
 class ExecuteCodeTool(Tool):
     """Execute code in E2B sandbox."""
@@ -168,109 +211,12 @@ The sandbox has numpy, pandas, matplotlib, requests pre-installed."""
         "required": ["code"]
     }
     
-    def __init__(self):
-        self._sandbox = None
-    
     async def execute(self, arguments: dict) -> ToolResult:
         code = arguments.get("code", "")
         timeout = min(arguments.get("timeout", 30), 300)
         
-        # Check for E2B API key
-        api_key = os.environ.get("E2B_API_KEY")
-        if not api_key:
-            # Fallback to local execution (less secure, for development)
-            return await self._execute_local(code, timeout)
-        
-        return await self._execute_e2b(code, timeout)
-    
-    async def _execute_e2b(self, code: str, timeout: int) -> ToolResult:
-        """Execute in E2B sandbox."""
-        try:
-            from e2b_code_interpreter import Sandbox
-            
-            # E2B v2.x API: use Sandbox.create() context manager
-            with Sandbox.create() as sandbox:
-                # Execute code
-                execution = sandbox.run_code(code)
-                
-                # Collect output
-                output_parts = []
-                artifacts = []
-                
-                # Handle both old and new API formats
-                if hasattr(execution, 'text') and execution.text:
-                    output_parts.append(execution.text)
-                elif hasattr(execution, 'logs'):
-                    if execution.logs.stdout:
-                        output_parts.append(execution.logs.stdout)
-                    if execution.logs.stderr:
-                        output_parts.append(f"STDERR: {execution.logs.stderr}")
-                
-                if hasattr(execution, 'error') and execution.error:
-                    error_msg = str(execution.error)
-                    if hasattr(execution.error, 'name') and hasattr(execution.error, 'value'):
-                        error_msg = f"{execution.error.name}: {execution.error.value}"
-                    output_parts.append(f"ERROR: {error_msg}")
-                    return ToolResult(
-                        output="\n".join(output_parts) or "No output",
-                        success=False
-                    )
-                
-                # Check for results (charts, data, etc.)
-                if hasattr(execution, 'results') and execution.results:
-                    for result in execution.results:
-                        if hasattr(result, 'png') and result.png:
-                            artifacts.append(f"[Chart generated: {len(result.png)} bytes]")
-                        elif hasattr(result, 'text') and result.text:
-                            output_parts.append(result.text)
-                
-                return ToolResult(
-                    output="\n".join(output_parts) or "Code executed successfully (no output)",
-                    success=True,
-                    artifacts=artifacts
-                )
-                
-        except ImportError:
-            logger.warning("e2b_not_installed", fallback="local")
-            return await self._execute_local(code, timeout)
-        except Exception as e:
-            logger.error("e2b_error", error=str(e))
-            return ToolResult(output=f"E2B error: {str(e)}", success=False)
-    
-    async def _execute_local(self, code: str, timeout: int) -> ToolResult:
-        """Fallback: execute locally (development only)."""
-        import io
-        import sys
-        from contextlib import redirect_stdout, redirect_stderr
-        
-        stdout_capture = io.StringIO()
-        stderr_capture = io.StringIO()
-        
-        try:
-            # Create isolated namespace
-            namespace = {"__builtins__": __builtins__}
-            
-            # Execute with timeout
-            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exec(code, namespace)
-            
-            stdout = stdout_capture.getvalue()
-            stderr = stderr_capture.getvalue()
-            
-            output = stdout
-            if stderr:
-                output += f"\nSTDERR: {stderr}"
-            
-            return ToolResult(
-                output=output or "Code executed successfully (no output)",
-                success=True
-            )
-            
-        except Exception as e:
-            return ToolResult(
-                output=f"Execution error: {type(e).__name__}: {str(e)}",
-                success=False
-            )
+        success, output = await execute_code_in_sandbox(code, timeout)
+        return ToolResult(output=output, success=success)
 
 
 class ReadFileTool(Tool):
@@ -340,7 +286,6 @@ def create_default_tools() -> ToolRegistry:
     
     registry.register(GetCurrentTimeTool())
     registry.register(CalculateTool())
-    registry.register(WebSearchTool())
     registry.register(ExecuteCodeTool())
     registry.register(ReadFileTool())
     registry.register(WriteFileTool())

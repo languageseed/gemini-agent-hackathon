@@ -281,6 +281,7 @@ class VerifiedAnalyzer:
         focus: str = "all",
         on_event: Optional[Callable[[StreamEvent], None]] = None,
         max_issues_to_verify: int = 10,
+        timeout_seconds: float = 600.0,  # 10 minutes default
     ) -> AnalysisResult:
         """
         Analyze codebase and verify findings.
@@ -293,6 +294,15 @@ class VerifiedAnalyzer:
             max_issues_to_verify: Maximum issues to run verification on
         """
         import time
+        import asyncio
+        
+        start_time = time.time()
+        
+        def check_timeout():
+            """Raise if timeout exceeded."""
+            elapsed = time.time() - start_time
+            if elapsed > timeout_seconds:
+                raise TimeoutError(f"Analysis timeout after {elapsed:.1f}s (limit: {timeout_seconds}s)")
         
         def emit(event_type: EventType, data: dict):
             if on_event:
@@ -344,6 +354,8 @@ CODEBASE:
         
         emit(EventType.TOKEN, {"content": raw_analysis, "phase": "analysis"})
         
+        check_timeout()  # Check after analysis phase
+        
         # ============================================================
         # PHASE 2: EXTRACT STRUCTURED ISSUES
         # ============================================================
@@ -390,6 +402,7 @@ CODEBASE:
             sorted_issues = sorted(issues, key=lambda i: severity_order.get(i.severity, 3))
             
             for issue in sorted_issues[:max_issues_to_verify]:
+                check_timeout()  # Check before each verification
                 await self._verify_issue(issue, emit)
             
             # Mark remaining as skipped

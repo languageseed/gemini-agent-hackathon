@@ -41,9 +41,14 @@ from .agent import (
     ToolRegistry, SessionStore,
     StreamEvent, EventType, EventCollector,
     VerifiedAnalyzer, Issue, AnalysisResult, VerificationStatus,
+    execute_code_in_sandbox,
 )
 from .agent.tools import create_default_tools
 
+# ============================================================
+# VERSION CONSTANT
+# ============================================================
+__version__ = "0.6.0"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -144,7 +149,8 @@ def get_marathon_agent() -> MarathonAgent:
         
         config = AgentConfig(
             model=get_model_name(),
-            max_iterations=15,
+            max_iterations=100,
+            timeout_seconds=600.0,  # 10 minutes default
         )
         
         _marathon_agent = MarathonAgent(
@@ -293,7 +299,8 @@ class AgentRequest(BaseModel):
     """Request for agent execution with tools."""
     prompt: str
     system_instruction: Optional[str] = None
-    max_iterations: int = 10
+    max_iterations: int = 100
+    timeout_seconds: float = 600.0  # 10 minutes default
 
 
 class AgentResponse(BaseModel):
@@ -390,7 +397,7 @@ async def root():
     """Root endpoint - shows API info."""
     return {
         "name": "Gemini Marathon Agent",
-        "version": "0.4.0",
+        "version": __version__,
         "status": "running",
         "model": get_model_name(),
         "docs": "/docs",
@@ -424,7 +431,7 @@ async def health():
             "reasoning": get_reasoning_model(),
         },
         "secured": get_api_key() is not None,
-        "version": "0.5.0",
+        "version": __version__,
         "capabilities": [
             "marathon_agent",
             "tool_calling",
@@ -514,7 +521,7 @@ async def diagnostics():
     
     results = {
         "timestamp": datetime.datetime.utcnow().isoformat(),
-        "version": "0.4.0",
+        "version": __version__,
         "checks": {},
         "metrics": _metrics,
     }
@@ -611,7 +618,7 @@ async def diagnostics_quick():
     return {
         "timestamp": datetime.datetime.utcnow().isoformat(),
         "metrics": _metrics,
-        "version": "0.4.0",
+        "version": __version__,
         "uptime_seconds": (datetime.datetime.utcnow() - _startup_time).total_seconds(),
     }
 
@@ -963,6 +970,7 @@ class MarathonAgentRequest(BaseModel):
     task: str
     session_id: Optional[str] = None
     max_iterations: Optional[int] = None
+    timeout_seconds: Optional[float] = None  # Default: 10 minutes, max: 1 hour
 
 
 class MarathonAgentResponse(BaseModel):
@@ -989,9 +997,12 @@ async def marathon_agent(request: MarathonAgentRequest):
     try:
         agent = get_marathon_agent()
         
-        # Override max iterations if specified
+        # Override limits if specified
         if request.max_iterations:
             agent.config.max_iterations = request.max_iterations
+        if request.timeout_seconds:
+            # Cap at 1 hour for safety
+            agent.config.timeout_seconds = min(request.timeout_seconds, 3600.0)
         
         result = await agent.run(
             task=request.task,
@@ -1029,8 +1040,11 @@ async def marathon_agent_stream(request: MarathonAgentRequest):
     try:
         agent = get_marathon_agent()
         
+        # Override limits if specified
         if request.max_iterations:
             agent.config.max_iterations = request.max_iterations
+        if request.timeout_seconds:
+            agent.config.timeout_seconds = min(request.timeout_seconds, 3600.0)
         
         # Collect events
         collector = EventCollector()
@@ -1472,59 +1486,6 @@ async def analyze_repository_verified(request: VerifiedAnalyzeRequest):
     
     client = get_gemini_client()
     
-    # Create code executor using E2B or local fallback
-    async def execute_code(code: str) -> tuple[bool, str]:
-        """Execute Python code and return (success, output)."""
-        api_key = os.environ.get("E2B_API_KEY")
-        
-        if api_key:
-            try:
-                from e2b_code_interpreter import Sandbox
-                
-                # E2B v2.x API: use Sandbox.create()
-                with Sandbox.create() as sandbox:
-                    execution = sandbox.run_code(code)
-                    
-                    output_parts = []
-                    if hasattr(execution, 'text') and execution.text:
-                        output_parts.append(execution.text)
-                    elif hasattr(execution, 'logs'):
-                        if execution.logs.stdout:
-                            output_parts.append(execution.logs.stdout)
-                        if execution.logs.stderr:
-                            output_parts.append(f"STDERR: {execution.logs.stderr}")
-                    
-                    if hasattr(execution, 'error') and execution.error:
-                        error_msg = str(execution.error)
-                        if hasattr(execution.error, 'name'):
-                            error_msg = f"{execution.error.name}: {execution.error.value}"
-                        return False, f"ERROR: {error_msg}"
-                    
-                    return True, "\n".join(output_parts) or "Success (no output)"
-                    
-            except Exception as e:
-                logger.warning("e2b_fallback", error=str(e))
-        
-        # Local fallback
-        import io
-        import sys
-        from contextlib import redirect_stdout, redirect_stderr
-        
-        stdout_capture = io.StringIO()
-        stderr_capture = io.StringIO()
-        
-        try:
-            namespace = {"__builtins__": __builtins__}
-            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exec(code, namespace)
-            
-            stdout = stdout_capture.getvalue()
-            stderr = stderr_capture.getvalue()
-            return True, stdout + (f"\nSTDERR: {stderr}" if stderr else "")
-            
-        except Exception as e:
-            return False, f"Error: {type(e).__name__}: {str(e)}"
-    
     # Clone the repository first
     from .agent.tools_github import CloneRepoTool
     
@@ -1541,7 +1502,7 @@ async def analyze_repository_verified(request: VerifiedAnalyzeRequest):
     analyzer = VerifiedAnalyzer(
         client=client,
         model=get_reasoning_model(),
-        code_executor=execute_code,
+        code_executor=execute_code_in_sandbox,
     )
     
     # Run analysis with verification
@@ -1581,59 +1542,6 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
     client = get_gemini_client()
     event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     
-    # Create code executor
-    async def execute_code(code: str) -> tuple[bool, str]:
-        """Execute Python code and return (success, output)."""
-        api_key = os.environ.get("E2B_API_KEY")
-        
-        if api_key:
-            try:
-                from e2b_code_interpreter import Sandbox
-                
-                # E2B v2.x API: use Sandbox.create()
-                with Sandbox.create() as sandbox:
-                    execution = sandbox.run_code(code)
-                    
-                    output_parts = []
-                    if hasattr(execution, 'text') and execution.text:
-                        output_parts.append(execution.text)
-                    elif hasattr(execution, 'logs'):
-                        if execution.logs.stdout:
-                            output_parts.append(execution.logs.stdout)
-                        if execution.logs.stderr:
-                            output_parts.append(f"STDERR: {execution.logs.stderr}")
-                    
-                    if hasattr(execution, 'error') and execution.error:
-                        error_msg = str(execution.error)
-                        if hasattr(execution.error, 'name'):
-                            error_msg = f"{execution.error.name}: {execution.error.value}"
-                        return False, f"ERROR: {error_msg}"
-                    
-                    return True, "\n".join(output_parts) or "Success (no output)"
-                    
-            except Exception as e:
-                logger.warning("e2b_fallback", error=str(e))
-        
-        # Local fallback
-        import io
-        import sys
-        from contextlib import redirect_stdout, redirect_stderr
-        
-        stdout_capture = io.StringIO()
-        stderr_capture = io.StringIO()
-        
-        try:
-            namespace = {"__builtins__": __builtins__}
-            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exec(code, namespace)
-            
-            stdout = stdout_capture.getvalue()
-            stderr = stderr_capture.getvalue()
-            return True, stdout + (f"\nSTDERR: {stderr}" if stderr else "")
-            
-        except Exception as e:
-            return False, f"Error: {type(e).__name__}: {str(e)}"
-    
     def on_event(event: StreamEvent):
         """Callback to push events to queue."""
         event_queue.put_nowait(event)
@@ -1671,7 +1579,7 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
             analyzer = VerifiedAnalyzer(
                 client=client,
                 model=get_reasoning_model(),
-                code_executor=execute_code,
+                code_executor=execute_code_in_sandbox,
             )
             
             # Run analysis
