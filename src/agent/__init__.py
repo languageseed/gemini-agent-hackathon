@@ -8,6 +8,14 @@ from .core import MarathonAgent, AgentConfig, AgentResult
 from .tools import ToolRegistry, ToolResult
 from .session import SessionStore, Session
 from .stream import StreamEvent, EventType, EventCollector
+from .verified_analysis import (
+    VerifiedAnalyzer,
+    Issue,
+    AnalysisResult,
+    Severity,
+    Category,
+    VerificationStatus,
+)
 
 __all__ = [
     "MarathonAgent",
@@ -20,4 +28,11 @@ __all__ = [
     "StreamEvent",
     "EventType",
     "EventCollector",
+    # Verified Analysis
+    "VerifiedAnalyzer",
+    "Issue",
+    "AnalysisResult",
+    "Severity",
+    "Category",
+    "VerificationStatus",
 ]

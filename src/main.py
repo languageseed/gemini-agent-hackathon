@@ -39,7 +39,8 @@ load_dotenv()
 from .agent import (
     MarathonAgent, AgentConfig, AgentResult,
     ToolRegistry, SessionStore,
-    StreamEvent, EventType, EventCollector
+    StreamEvent, EventType, EventCollector,
+    VerifiedAnalyzer, Issue, AnalysisResult, VerificationStatus,
 )
 from .agent.tools import create_default_tools
 
@@ -1034,6 +1035,276 @@ async def list_codebase_tools():
             for name, tool in agent.tools.items()
         ]
     }
+
+
+# ============================================================
+# V4: VERIFIED ANALYSIS (with test verification)
+# ============================================================
+
+class VerifiedAnalyzeRequest(BaseModel):
+    """Request for verified codebase analysis."""
+    repo_url: str
+    focus: str = "all"
+    branch: Optional[str] = None
+    max_issues_to_verify: int = 10
+
+
+@app.post("/v4/analyze/verified", dependencies=[Depends(verify_api_key)])
+async def analyze_repository_verified(request: VerifiedAnalyzeRequest):
+    """
+    Analyze a GitHub repository with VERIFICATION.
+    
+    Two-phase analysis:
+    1. Analyze codebase and extract structured issues
+    2. Generate tests and run them to VERIFY findings
+    
+    Issues marked as:
+    - VERIFIED: Test failed as expected (bug confirmed!)
+    - UNVERIFIED: Test passed (may be false positive)
+    - SKIPPED: Could not generate test
+    
+    This is "Vibe Engineering" - agents that verify their work.
+    """
+    import asyncio
+    import httpx
+    
+    client = get_gemini_client()
+    
+    # Create code executor using E2B or local fallback
+    async def execute_code(code: str) -> tuple[bool, str]:
+        """Execute Python code and return (success, output)."""
+        api_key = os.environ.get("E2B_API_KEY")
+        
+        if api_key:
+            try:
+                from e2b_code_interpreter import Sandbox
+                
+                sandbox = Sandbox(timeout=30)
+                try:
+                    execution = sandbox.run_code(code)
+                    
+                    output_parts = []
+                    if execution.logs.stdout:
+                        output_parts.append(execution.logs.stdout)
+                    if execution.logs.stderr:
+                        output_parts.append(f"STDERR: {execution.logs.stderr}")
+                    
+                    if execution.error:
+                        return False, f"ERROR: {execution.error.name}: {execution.error.value}"
+                    
+                    return True, "\n".join(output_parts) or "Success (no output)"
+                finally:
+                    sandbox.kill()
+                    
+            except Exception as e:
+                logger.warning("e2b_fallback", error=str(e))
+        
+        # Local fallback
+        import io
+        import sys
+        from contextlib import redirect_stdout, redirect_stderr
+        
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+        
+        try:
+            namespace = {"__builtins__": __builtins__}
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                exec(code, namespace)
+            
+            stdout = stdout_capture.getvalue()
+            stderr = stderr_capture.getvalue()
+            return True, stdout + (f"\nSTDERR: {stderr}" if stderr else "")
+            
+        except Exception as e:
+            return False, f"Error: {type(e).__name__}: {str(e)}"
+    
+    # Clone the repository first
+    from .agent.tools_github import CloneRepoTool
+    
+    clone_tool = CloneRepoTool()
+    clone_result = await clone_tool.execute({
+        "repo_url": request.repo_url,
+        "branch": request.branch,
+    })
+    
+    if not clone_result.success:
+        raise HTTPException(status_code=400, detail=f"Failed to clone repository: {clone_result.output}")
+    
+    # Create verified analyzer
+    analyzer = VerifiedAnalyzer(
+        client=client,
+        model=get_model_name(),
+        code_executor=execute_code,
+    )
+    
+    # Run analysis with verification
+    result = await analyzer.analyze_and_verify(
+        repo_content=clone_result.output,
+        repo_url=request.repo_url,
+        focus=request.focus,
+        max_issues_to_verify=request.max_issues_to_verify,
+    )
+    
+    return result.to_dict()
+
+
+@app.post("/v4/analyze/verified/stream", dependencies=[Depends(verify_api_key)])
+async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
+    """
+    Analyze with verification - SSE streaming version.
+    
+    Streams events:
+    - thinking: Phase updates
+    - issue_found: Each issue as discovered
+    - verify_start: Starting verification of an issue
+    - verify_result: Verification result (verified/unverified)
+    - done: Complete with all issues
+    """
+    import asyncio
+    import httpx
+    
+    client = get_gemini_client()
+    event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+    
+    # Create code executor
+    async def execute_code(code: str) -> tuple[bool, str]:
+        """Execute Python code and return (success, output)."""
+        api_key = os.environ.get("E2B_API_KEY")
+        
+        if api_key:
+            try:
+                from e2b_code_interpreter import Sandbox
+                
+                sandbox = Sandbox(timeout=30)
+                try:
+                    execution = sandbox.run_code(code)
+                    
+                    output_parts = []
+                    if execution.logs.stdout:
+                        output_parts.append(execution.logs.stdout)
+                    if execution.logs.stderr:
+                        output_parts.append(f"STDERR: {execution.logs.stderr}")
+                    
+                    if execution.error:
+                        return False, f"ERROR: {execution.error.name}: {execution.error.value}"
+                    
+                    return True, "\n".join(output_parts) or "Success (no output)"
+                finally:
+                    sandbox.kill()
+                    
+            except Exception as e:
+                logger.warning("e2b_fallback", error=str(e))
+        
+        # Local fallback
+        import io
+        import sys
+        from contextlib import redirect_stdout, redirect_stderr
+        
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+        
+        try:
+            namespace = {"__builtins__": __builtins__}
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                exec(code, namespace)
+            
+            stdout = stdout_capture.getvalue()
+            stderr = stderr_capture.getvalue()
+            return True, stdout + (f"\nSTDERR: {stderr}" if stderr else "")
+            
+        except Exception as e:
+            return False, f"Error: {type(e).__name__}: {str(e)}"
+    
+    def on_event(event: StreamEvent):
+        """Callback to push events to queue."""
+        event_queue.put_nowait(event)
+    
+    async def run_analysis():
+        """Run the verified analysis."""
+        try:
+            # Clone repo first
+            from .agent.tools_github import CloneRepoTool
+            
+            on_event(StreamEvent(
+                type=EventType.TOOL_START,
+                data={"name": "clone_repo", "repo_url": request.repo_url}
+            ))
+            
+            clone_tool = CloneRepoTool()
+            clone_result = await clone_tool.execute({
+                "repo_url": request.repo_url,
+                "branch": request.branch,
+            })
+            
+            on_event(StreamEvent(
+                type=EventType.TOOL_RESULT,
+                data={"name": "clone_repo", "success": clone_result.success}
+            ))
+            
+            if not clone_result.success:
+                event_queue.put_nowait(StreamEvent(
+                    type=EventType.ERROR,
+                    data={"error": f"Failed to clone: {clone_result.output}"}
+                ))
+                return
+            
+            # Create analyzer
+            analyzer = VerifiedAnalyzer(
+                client=client,
+                model=get_model_name(),
+                code_executor=execute_code,
+            )
+            
+            # Run analysis
+            result = await analyzer.analyze_and_verify(
+                repo_content=clone_result.output,
+                repo_url=request.repo_url,
+                focus=request.focus,
+                on_event=on_event,
+                max_issues_to_verify=request.max_issues_to_verify,
+            )
+            
+            # Send final result
+            event_queue.put_nowait(StreamEvent(
+                type=EventType.DONE,
+                data=result.to_dict()
+            ))
+            
+        except Exception as e:
+            logger.error("verified_analysis_error", error=str(e))
+            event_queue.put_nowait(StreamEvent(
+                type=EventType.ERROR,
+                data={"error": str(e)}
+            ))
+    
+    async def event_generator():
+        """Generate SSE events."""
+        analysis_task = asyncio.create_task(run_analysis())
+        
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=180.0)
+                    yield event.to_sse()
+                    
+                    if event.type in (EventType.DONE, EventType.ERROR):
+                        break
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            if not analysis_task.done():
+                analysis_task.cancel()
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 # ============================================================
