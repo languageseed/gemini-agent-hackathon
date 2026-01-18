@@ -175,31 +175,49 @@ Problematic code:
 ```
 
 CRITICAL REQUIREMENTS:
-1. The test MUST be completely self-contained - embed/copy the problematic code directly in the test
-2. DO NOT import from the repository - the test runs in an isolated sandbox
-3. Only use Python standard library (no pip packages)
-4. Use assert statements that will FAIL if the bug exists
-5. The test should PASS when the bug is fixed
+1. SELF-CONTAINED: Copy/embed the problematic code directly into your test file
+2. NO EXTERNAL IMPORTS: Only use Python standard library (os, sys, re, json, typing, etc.)
+3. NO PIP PACKAGES: Do not import requests, numpy, pandas, fastapi, pydantic, etc.
+4. NO FILE ACCESS: Do not read/write files - embed all test data as strings
+5. ASSERTION TEST: Use assert that FAILS if the bug exists, PASSES if fixed
+
+FORBIDDEN (will cause test to error):
+- import requests, httpx, aiohttp
+- import numpy, pandas, scipy
+- import fastapi, flask, django
+- import pydantic, sqlalchemy
+- from some_repo import anything
+- open("file.txt"), Path("file")
+
+ALLOWED imports:
+- import os, sys, re, json, time, datetime, collections, itertools, functools
+- import typing, dataclasses, enum, abc
+- import asyncio, threading, multiprocessing
+- import unittest, math, random, string, copy
 
 Example structure:
 ```python
 # Test for: {title}
-# Copy the problematic function/code here
-def buggy_function():
-    # paste the code with the bug
-    pass
 
-# Test that demonstrates the bug
+# STEP 1: Embed the buggy code (simplified if needed)
+def buggy_function(x):
+    # Paste or recreate the logic with the bug
+    return x  # buggy implementation
+
+# STEP 2: Test that exposes the bug
 def test_bug():
-    result = buggy_function()
+    # This should FAIL if bug exists, PASS if fixed
+    result = buggy_function("test_input")
+    expected = "expected_output"
     assert result == expected, f"Bug exists: got {{result}}, expected {{expected}}"
 
-# Run test
-test_bug()
-print("PASS: Bug was fixed")
+# STEP 3: Run test
+if __name__ == "__main__":
+    test_bug()
+    print("PASS: Bug was fixed")
 ```
 
-Return ONLY the Python test code, no markdown or explanation:
+Return ONLY the Python test code. No markdown fences, no explanations:
 '''
 
 # Prompt to generate fix code
@@ -281,6 +299,56 @@ def extract_test_code(response: str) -> str:
     code = re.sub(r'^```\s*', '', code)
     code = re.sub(r'\s*```$', '', code)
     return code.strip()
+
+
+# Forbidden imports that will fail in sandbox
+FORBIDDEN_IMPORTS = [
+    'requests', 'httpx', 'aiohttp', 'urllib3',
+    'numpy', 'pandas', 'scipy', 'sklearn', 'tensorflow', 'torch',
+    'fastapi', 'flask', 'django', 'starlette',
+    'pydantic', 'sqlalchemy', 'asyncpg', 'psycopg',
+    'pytest', 'nose',  # Test frameworks with dependencies
+]
+
+
+def validate_test_code(code: str) -> tuple[bool, str]:
+    """
+    Validate test code before execution.
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    if not code or len(code.strip()) < 10:
+        return False, "Test code is empty or too short"
+    
+    # Check for forbidden imports
+    code_lower = code.lower()
+    for forbidden in FORBIDDEN_IMPORTS:
+        # Match "import forbidden" or "from forbidden"
+        if re.search(rf'\b(import|from)\s+{forbidden}\b', code_lower):
+            return False, f"Test uses forbidden import: {forbidden}"
+    
+    # Check for file operations (likely to fail)
+    file_patterns = [
+        r"open\s*\(['\"]",
+        r"Path\s*\(['\"]",
+        r"with\s+open\s*\(",
+    ]
+    for pattern in file_patterns:
+        if re.search(pattern, code):
+            return False, "Test contains file operations (not supported in sandbox)"
+    
+    # Check for syntax errors
+    try:
+        compile(code, '<test>', 'exec')
+    except SyntaxError as e:
+        return False, f"Syntax error: {e}"
+    
+    # Check it has some form of assertion or test
+    if 'assert' not in code and 'raise' not in code and 'error' not in code_lower:
+        return False, "Test has no assertions"
+    
+    return True, ""
 
 
 class VerifiedAnalyzer:
@@ -502,6 +570,21 @@ CODEBASE:
             
             test_code = extract_test_code(test_response.text)
             issue.test_code = test_code
+            
+            # Validate test code before execution
+            is_valid, validation_error = validate_test_code(test_code)
+            if not is_valid:
+                issue.verification_status = VerificationStatus.ERROR
+                issue.verification_method = "snippet"
+                issue.test_error = validation_error
+                issue.test_output = f"Validation failed: {validation_error}"
+                emit(EventType.TOOL_RESULT, {
+                    "name": "verify_issue",
+                    "issue_id": issue.id,
+                    "status": "error",
+                    "error": validation_error,
+                })
+                return
             
             # Execute test with proper classification
             result = await execute_verification_test(test_code)
