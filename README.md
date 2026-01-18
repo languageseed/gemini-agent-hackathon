@@ -67,14 +67,16 @@ uvicorn src.main:app --reload
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check with version and capabilities |
-| `/diagnostics` | GET | Full component health checks |
-| `/logs` | GET | Recent activity buffer |
-| `/v4/analyze/verified/stream` | POST | **Main endpoint** - Verified analysis with SSE |
+| `/v4/analyze/verified` | POST | Verified analysis (blocking) |
+| `/v4/analyze/verified/stream` | POST | Verified analysis with SSE streaming |
+| `/v4/analyze/async` | POST | Submit async job |
+| `/v4/jobs/{id}` | GET | Poll job status |
+| `/diagnostics/quick` | GET | Metrics and health |
 
-### Example Request
+### Example: cURL
 
 ```bash
-curl -X POST https://gemini-agent-hackathon-production.up.railway.app/v4/analyze/verified/stream \
+curl -X POST https://gemini-agent-hackathon-production.up.railway.app/v4/analyze/verified \
   -H "Content-Type: application/json" \
   -H "X-API-Key: YOUR_KEY" \
   -d '{
@@ -84,6 +86,21 @@ curl -X POST https://gemini-agent-hackathon-production.up.railway.app/v4/analyze
   }'
 ```
 
+### Example: Python Client
+
+```bash
+pip install -e projects/gemini-analyst-client
+export GEMINI_ANALYST_API_KEY="YOUR_API_KEY"
+
+# CLI
+gemini-analyst analyze https://github.com/owner/repo --focus security
+
+# Python
+from gemini_analyst import AnalystClient
+client = AnalystClient(api_key=os.environ["GEMINI_ANALYST_API_KEY"])
+report = client.analyze("https://github.com/owner/repo")
+```
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
@@ -91,11 +108,11 @@ See [docs/architecture.md](docs/architecture.md) for detailed diagrams.
 ```
 Frontend (Vercel)      Backend (Railway)         External Services
 ┌──────────────┐      ┌────────────────────┐    ┌─────────────────┐
-│  SvelteKit   │─────▶│  FastAPI v0.5.0    │───▶│  Gemini 3 Pro   │
+│  SvelteKit   │─────▶│  FastAPI v0.6.0    │───▶│  Gemini 3 Pro   │
 │  Live UI     │ SSE  │  VerifiedAnalyzer  │    │  2M Context     │
-└──────────────┘      │  Observability     │    ├─────────────────┤
-                      └────────────────────┘───▶│  E2B Sandbox    │
-                                                │  Code Execution │
+└──────────────┘      │  Async Jobs        │    ├─────────────────┤
+                      │  Observability     │    │  E2B Sandbox    │
+                      └────────────────────┘───▶│  Code Execution │
                                                 ├─────────────────┤
                                                 │  GitHub API     │
                                                 │  Clone Repos    │

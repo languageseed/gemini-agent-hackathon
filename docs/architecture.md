@@ -17,7 +17,7 @@
                                  │ SSE Streaming
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           BACKEND API (v0.5.0)                              │
+│                           BACKEND API (v0.6.0)                              │
 │                          (FastAPI on Railway)                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
@@ -151,6 +151,26 @@ Built-in monitoring and debugging:
 | Execution | E2B Code Interpreter Sandbox |
 | Hosting | Vercel (frontend), Railway (backend) |
 | Secrets | Doppler |
+| Client | Python package with CLI (`gemini-analyst`) |
+
+## API Features (v0.6.0)
+
+### Async Job System
+- `POST /v4/analyze/async` - Submit job, returns immediately
+- `GET /v4/jobs/{id}` - Poll for status and results
+- Webhook callbacks when job completes
+- Concurrency limits (max 3 concurrent jobs)
+
+### Python Client
+```bash
+pip install -e projects/gemini-analyst-client
+gemini-analyst analyze https://github.com/owner/repo --async --wait
+```
+
+### Observability
+- `/diagnostics/quick` - Metrics, uptime, error counts
+- `/logs` - Recent activity buffer
+- Request tracing with IDs
 
 ## Hackathon Track: Vibe Engineering
 
