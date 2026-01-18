@@ -257,23 +257,51 @@ Return your response in this JSON format:
 
 def parse_issues_from_json(json_str: str) -> list[Issue]:
     """Parse issues from JSON string."""
+    original_len = len(json_str)
+    
     # Try to extract JSON from potential markdown
     json_match = re.search(r'\[[\s\S]*\]', json_str)
     if json_match:
         json_str = json_match.group(0)
+        logger.debug("extracted_json_array", original_len=original_len, extracted_len=len(json_str))
+    else:
+        logger.warning("no_json_array_found", text_preview=json_str[:300])
+        return []
     
     try:
         data = json.loads(json_str)
+        logger.info("json_parsed", item_count=len(data) if isinstance(data, list) else 0)
+        
+        if not isinstance(data, list):
+            logger.error("json_not_list", type=type(data).__name__)
+            return []
+        
         issues = []
         
-        for item in data:
+        for i, item in enumerate(data):
             try:
+                # Handle category mapping - expand for compatibility
+                category_str = item.get("category", "bug").lower()
+                category_map = {
+                    "bug": "bug",
+                    "type safety": "bug",
+                    "logic error": "bug",
+                    "reliability": "bug",
+                    "compatibility": "bug",
+                    "security": "security",
+                    "performance": "performance",
+                    "style": "style",
+                    "api consistency": "style",
+                    "architecture": "architecture",
+                }
+                category_str = category_map.get(category_str, "bug")
+                
                 issue = Issue(
                     id=str(uuid.uuid4())[:8],
                     title=item.get("title", "Unknown Issue"),
                     description=item.get("description", ""),
                     severity=Severity(item.get("severity", "medium").lower()),
-                    category=Category(item.get("category", "bug").lower()),
+                    category=Category(category_str),
                     file_path=item.get("file_path", "unknown"),
                     line_number=item.get("line_number"),
                     code_snippet=item.get("code_snippet"),
@@ -282,9 +310,10 @@ def parse_issues_from_json(json_str: str) -> list[Issue]:
                 )
                 issues.append(issue)
             except (ValueError, KeyError) as e:
-                logger.warning("issue_parse_error", error=str(e), item=item)
+                logger.warning("issue_parse_error", index=i, error=str(e), item_keys=list(item.keys()) if isinstance(item, dict) else None)
                 continue
         
+        logger.info("issues_parsed", count=len(issues))
         return issues
         
     except json.JSONDecodeError as e:
@@ -463,7 +492,15 @@ CODEBASE:
             contents=extraction_prompt,
         )
         
-        issues = parse_issues_from_json(extraction_response.text)
+        extraction_text = extraction_response.text
+        logger.info("extraction_response", text_length=len(extraction_text), preview=extraction_text[:500])
+        
+        issues = parse_issues_from_json(extraction_text)
+        
+        if not issues and len(extraction_text) > 10:
+            logger.warning("extraction_returned_no_issues", 
+                          response_preview=extraction_text[:1000],
+                          analysis_had_content=len(raw_analysis) > 100)
         
         # Emit each issue found
         for issue in issues:
