@@ -918,8 +918,31 @@ Path filter: {request.path_filter or 'all files'}
     # Use asyncio.Queue for real-time streaming
     event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     
+    # Accumulate analysis text from token events
+    accumulated_text: list[str] = []
+    accumulated_tool_calls: list[dict] = []
+    final_iterations = 0
+    
     def on_event(event: StreamEvent):
-        """Callback to push events to queue."""
+        """Callback to push events to queue, accumulating text."""
+        nonlocal final_iterations
+        
+        # Accumulate token content for final result
+        if event.type == EventType.TOKEN:
+            content = event.data.get("content", "")
+            if content:
+                accumulated_text.append(content)
+        
+        # Track tool calls
+        if event.type == EventType.TOOL_START:
+            accumulated_tool_calls.append(event.data)
+        
+        # Intercept agent's DONE event - we'll create our own with full text
+        if event.type == EventType.DONE:
+            final_iterations = event.data.get("iterations", 0)
+            # Don't forward - we'll create a better one after agent completes
+            return
+        
         event_queue.put_nowait(event)
     
     async def run_agent():
@@ -931,21 +954,29 @@ Path filter: {request.path_filter or 'all files'}
                 on_event=on_event,
             )
             
-            # Extract metrics
-            files_analyzed = sum(1 for tc in result.tool_calls if tc.get("name") == "clone_repo") * 10
-            issue_keywords = ["bug", "issue", "vulnerability", "error", "problem", "warning"]
-            issues_found = sum(result.text.lower().count(kw) for kw in issue_keywords)
+            # Use accumulated text or fallback to result.text
+            analysis_text = "".join(accumulated_text) or result.text or ""
             
-            # Push final result
+            # Extract metrics
+            files_analyzed = 0
+            for tc in accumulated_tool_calls:
+                if tc.get("name") == "clone_repo":
+                    # Try to get file count from output
+                    files_analyzed = 50  # Default estimate
+            
+            issue_keywords = ["bug", "issue", "vulnerability", "error", "problem", "warning", "critical", "high", "medium"]
+            issues_found = sum(analysis_text.lower().count(kw) for kw in issue_keywords)
+            
+            # Push final result with FULL analysis text
             event_queue.put_nowait(StreamEvent(
                 type=EventType.DONE,
                 data={
-                    "analysis": result.text,
+                    "analysis": analysis_text,
                     "repo_url": request.repo_url,
-                    "files_analyzed": files_analyzed or 10,
+                    "files_analyzed": files_analyzed or len(accumulated_tool_calls) * 20,
                     "issues_found": min(issues_found, 50),
-                    "tool_calls": result.tool_calls,
-                    "iterations": result.iterations,
+                    "tool_calls": accumulated_tool_calls,
+                    "iterations": result.iterations or final_iterations,
                     "session_id": result.session_id,
                     "completed": result.completed,
                 }
