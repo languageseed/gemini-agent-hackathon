@@ -1225,7 +1225,7 @@ async def analyze_repository(request: AnalyzeRepoRequest):
     Analyze a GitHub repository.
     
     This is the hackathon showcase endpoint - demonstrates:
-    - Loading entire codebases using Gemini's 2M context
+    - Loading codebases using Gemini's large context window (truncated for reliability)
     - Multi-step autonomous analysis
     - Code execution for verification
     - Comprehensive reporting

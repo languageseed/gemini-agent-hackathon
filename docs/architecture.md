@@ -72,9 +72,9 @@
 
 ```
 1. USER                     2. CLONE                    3. ANALYZE
-   Input Repo URL ──────────▶ Fetch entire ──────────▶ Send to Gemini 3
-   Select Focus                codebase                 with 2M context
-   Enable Verify                                        window
+   Input Repo URL ──────────▶ Fetch codebase ─────────▶ Send to Gemini 3
+   Select Focus                (truncated to            (using ~125K tokens
+   Enable Verify               ~500K chars)             of 2M available)
         │                                                    │
         │                                                    ▼
         │                     4. EXTRACT                5. VERIFY
@@ -119,11 +119,11 @@
 
 ### VerifiedAnalyzer (`verified_analysis.py`)
 The core engine that orchestrates the analysis pipeline:
-- Sends entire codebase to Gemini (leverages 2M token context)
+- Sends codebase to Gemini (truncated to ~500K chars / ~125K tokens for reliability)
 - Extracts structured issues with severity and category
-- Generates Python tests to verify each issue
-- Executes tests in E2B sandbox
-- Generates fixes for verified bugs
+- Generates self-contained Python tests to verify each issue
+- Executes tests in E2B sandbox (snippet-isolated, not full repo)
+- Proposes fixes for verified bugs (fixes are AI-generated proposals, not verified)
 
 ### StreamEvent System (`stream.py`)
 Real-time progress reporting via Server-Sent Events:
@@ -158,8 +158,16 @@ This project implements the "Vibe Engineering" approach:
 
 > **"Agents that write AND verify code"**
 
-1. **Write**: Gemini analyzes code and identifies issues
-2. **Verify**: Tests are generated and executed to confirm bugs
-3. **Fix**: AI generates verified fixes for confirmed issues
+1. **Analyze**: Gemini analyzes code and identifies potential issues
+2. **Verify**: Self-contained tests are generated and executed to confirm bugs
+   - Tests run in isolated sandbox (snippet-level, not full repo integration)
+   - Only assertion failures count as "verified" (import/runtime errors don't)
+3. **Propose**: AI generates fix proposals for confirmed issues
+   - Fixes are labeled "proposed" (not verified against repo)
 
-This goes beyond simple code analysis by proving issues exist through automated testing.
+### Limitations (Transparency)
+- Codebase truncated to ~500K chars for reliability
+- Verification is snippet-isolated (code embedded in test, not repo mounted)
+- Fix proposals are not re-tested against the failing test
+
+This goes beyond simple code analysis by attempting to prove issues exist through automated testing, while being transparent about the verification boundaries.

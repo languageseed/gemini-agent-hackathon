@@ -116,15 +116,37 @@ settings = Settings()
 ### Frontend Security (If Applicable)
 
 ```javascript
-// ❌ NEVER expose API keys in frontend
+// ❌ NEVER hardcode API keys in frontend source code
 const apiKey = "sk-abc123..."  // NEVER DO THIS!
 
-// ✅ Call your own backend, which has the key securely
+// ✅ PRODUCTION: Call your own backend, which has the key securely
 const response = await fetch('/api/generate', {
     method: 'POST',
     body: JSON.stringify({ prompt: userInput })
 });
 ```
+
+#### Demo/Hackathon Exception
+
+For hackathon demos, it's acceptable to have users enter their own API key (stored in sessionStorage):
+
+```javascript
+// ⚠️ DEMO ONLY - user-provided key stored in sessionStorage
+// This is for hackathon judging where users test with their own keys
+// NOT recommended for production - use server-side auth instead
+
+// sessionStorage is preferred over localStorage:
+// - Cleared when tab closes
+// - Not persisted across sessions
+// - Reduces exposure window
+```
+
+**Our demo uses this pattern because:**
+1. Judges may want to test with their own API keys
+2. We don't want to expose our API quota to public abuse
+3. sessionStorage limits exposure (cleared on tab close)
+
+**For production:** Always use server-side authentication and never expose API keys to the frontend.
 
 ---
 

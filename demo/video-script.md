@@ -21,11 +21,11 @@
 **[Show: Architecture diagram]**
 
 > "Verified Codebase Analyst takes a different approach:
-> 1. Load the ENTIRE codebase into Gemini 3's context
+> 1. Send the codebase to Gemini 3's large context window
 > 2. Identify potential issues
-> 3. Generate tests that would FAIL if the bug exists
-> 4. Execute those tests
-> 5. Only report VERIFIED bugs with AI-generated fixes"
+> 3. Generate self-contained tests that would FAIL if the bug exists
+> 4. Execute those tests in isolated sandboxes
+> 5. Report issues with verification status and proposed fixes"
 
 ## Live Demo (1:00 - 2:20)
 

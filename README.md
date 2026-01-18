@@ -4,29 +4,34 @@
 
 > **"AI that proves bugs exist before reporting them."**
 
-An AI-powered code analyzer that uses Gemini 3's 2-million token context window to analyze entire codebases and **verify** findings through automated test generation.
+An AI-powered code analyzer that uses Gemini 3's 2-million token context window to analyze codebases and **verify** findings through automated test generation.
 
 ## The Vibe Engineering Approach
 
 Traditional static analysis produces false positives. We take a different approach:
 
-1. **Analyze** - Load entire codebase into Gemini 3 (2M context)
+1. **Analyze** - Load codebase into Gemini 3 (up to ~125K tokens)
 2. **Extract** - Identify bugs, security issues, performance problems
-3. **Verify** - Generate Python tests that FAIL if the bug exists
-4. **Execute** - Run tests in E2B sandboxes
-5. **Fix** - Generate AI fixes for verified bugs
+3. **Verify** - Generate self-contained tests that FAIL if the bug exists
+4. **Execute** - Run tests in E2B sandboxes (snippet-isolated)
+5. **Propose** - Generate AI fix proposals for verified bugs
 
-**Result:** Only report issues we can PROVE exist.
+**Result:** Report issues with verification status and honest confidence levels.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Whole-Codebase Analysis** | No chunking or RAG - full context understanding |
-| **Automated Verification** | Tests generated and executed to confirm bugs |
-| **AI-Generated Fixes** | One-click fixes for verified issues |
+| **Large Context Analysis** | No chunking or RAG - uses Gemini's 2M context window |
+| **Automated Verification** | Tests generated and executed to confirm bugs (snippet-level) |
+| **AI-Generated Fix Proposals** | Proposed fixes for verified issues (labeled as "proposed") |
 | **Real-Time Streaming** | SSE for live progress updates |
 | **Full Observability** | Logs, metrics, diagnostics endpoints |
+
+### Transparency Notes
+- Large repos are truncated to ~500K chars for reliability
+- Verification runs snippet-isolated tests (not full repo integration)
+- Fixes are proposals, not verified against the test suite
 
 ## Quick Start
 
