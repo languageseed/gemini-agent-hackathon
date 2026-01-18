@@ -1710,6 +1710,15 @@ class AsyncJob:
 _jobs: dict[str, AsyncJob] = {}
 _job_tasks: dict[str, asyncio.Task] = {}
 
+# Concurrency control
+MAX_CONCURRENT_JOBS = 3  # Limit concurrent verification jobs
+_job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+
+
+def get_running_job_count() -> int:
+    """Get count of currently running jobs."""
+    return sum(1 for j in _jobs.values() if j.status == JobStatus.RUNNING)
+
 
 class AsyncAnalyzeRequest(BaseModel):
     """Request for async analysis."""
@@ -1741,87 +1750,103 @@ class AsyncJobStatusResponse(BaseModel):
 
 
 async def run_async_job(job: AsyncJob, request: AsyncAnalyzeRequest):
-    """Background task to run analysis."""
-    import httpx
+    """Background task to run analysis with concurrency control."""
     
-    try:
-        job.status = JobStatus.RUNNING
-        job.current_phase = "Cloning repository"
-        job.updated_at = time.time()
+    # Wait for semaphore (limits concurrent jobs)
+    job.current_phase = "Queued (waiting for slot)"
+    job.updated_at = time.time()
+    
+    async with _job_semaphore:
+        analysis_start = time.time()
         
-        # Clone repo
-        from .agent.tools_github import CloneRepoTool
-        clone_tool = CloneRepoTool()
-        clone_result = await clone_tool.execute({
-            "repo_url": request.repo_url,
-            "branch": request.branch,
-        })
-        
-        if not clone_result.success:
-            job.status = JobStatus.FAILED
-            job.error = f"Failed to clone: {clone_result.output}"
+        try:
+            job.status = JobStatus.RUNNING
+            job.current_phase = "Cloning repository"
             job.updated_at = time.time()
-            await send_webhook(job)
-            return
-        
-        job.progress = 0.2
-        job.current_phase = "Analyzing codebase"
-        job.updated_at = time.time()
-        
-        # Run analysis
-        client = get_gemini_client()
-        
-        def on_event(event: StreamEvent):
-            """Update job progress from events."""
-            if event.type == EventType.THINKING:
-                phase = event.data.get("phase", "")
-                if phase:
-                    job.current_phase = phase
-                    job.updated_at = time.time()
-        
-        if request.verify:
-            analyzer = VerifiedAnalyzer(
-                client=client,
-                model=get_reasoning_model(),
-                code_executor=execute_code_in_sandbox,
-            )
             
-            result = await analyzer.analyze_and_verify(
-                repo_content=clone_result.output,
-                repo_url=request.repo_url,
-                focus=request.focus,
-                on_event=on_event,
-                max_issues_to_verify=request.max_issues_to_verify,
-            )
+            # Clone repo
+            from .agent.tools_github import CloneRepoTool
+            clone_tool = CloneRepoTool()
+            clone_result = await clone_tool.execute({
+                "repo_url": request.repo_url,
+                "branch": request.branch,
+            })
             
-            job.result = result.to_dict()
-        else:
-            # Non-verified analysis (simpler path)
-            job.result = {
-                "repo": request.repo_url,
-                "summary": "Analysis completed",
-                "issues": [],
-                "stats": {"total": 0}
-            }
-        
-        job.status = JobStatus.COMPLETED
-        job.progress = 1.0
-        job.current_phase = "Complete"
-        job.updated_at = time.time()
-        
-        # Log completion
-        add_log("info", "async_job_completed",
-                job_id=job.job_id,
-                repo_url=job.repo_url,
-                total_issues=len(job.result.get("issues", [])))
-        
-    except Exception as e:
-        job.status = JobStatus.FAILED
-        job.error = str(e)
-        job.updated_at = time.time()
-        add_log("error", "async_job_failed",
-                job_id=job.job_id,
-                error=str(e)[:200])
+            if not clone_result.success:
+                job.status = JobStatus.FAILED
+                job.error = f"Failed to clone: {clone_result.output}"
+                job.updated_at = time.time()
+                _metrics["analyses"]["total"] += 1
+                await send_webhook(job)
+                return
+            
+            job.progress = 0.2
+            job.current_phase = "Analyzing codebase"
+            job.updated_at = time.time()
+            
+            # Run analysis
+            client = get_gemini_client()
+            
+            def on_event(event: StreamEvent):
+                """Update job progress from events."""
+                if event.type == EventType.THINKING:
+                    phase = event.data.get("phase", "")
+                    if phase:
+                        job.current_phase = phase
+                        job.updated_at = time.time()
+            
+            if request.verify:
+                analyzer = VerifiedAnalyzer(
+                    client=client,
+                    model=get_reasoning_model(),
+                    code_executor=execute_code_in_sandbox,
+                )
+                
+                result = await analyzer.analyze_and_verify(
+                    repo_content=clone_result.output,
+                    repo_url=request.repo_url,
+                    focus=request.focus,
+                    on_event=on_event,
+                    max_issues_to_verify=request.max_issues_to_verify,
+                )
+                
+                job.result = result.to_dict()
+                
+                # Update metrics
+                _metrics["analyses"]["total"] += 1
+                _metrics["analyses"]["verified"] += result.verified_count
+                _metrics["analyses"]["issues_found"] += result.total_issues
+            else:
+                # Non-verified analysis (simpler path)
+                job.result = {
+                    "repo": request.repo_url,
+                    "summary": "Analysis completed",
+                    "issues": [],
+                    "stats": {"total": 0}
+                }
+                _metrics["analyses"]["total"] += 1
+            
+            job.status = JobStatus.COMPLETED
+            job.progress = 1.0
+            job.current_phase = "Complete"
+            job.updated_at = time.time()
+            
+            # Log completion
+            duration_s = time.time() - analysis_start
+            add_log("info", "async_job_completed",
+                    job_id=job.job_id,
+                    repo_url=job.repo_url,
+                    total_issues=len(job.result.get("issues", [])),
+                    duration_seconds=round(duration_s, 2))
+            
+        except Exception as e:
+            job.status = JobStatus.FAILED
+            job.error = str(e)
+            job.updated_at = time.time()
+            _metrics["analyses"]["total"] += 1
+            add_log("error", "async_job_failed",
+                    job_id=job.job_id,
+                    error=str(e)[:200])
     
     # Send webhook notification
     await send_webhook(job)
@@ -1887,6 +1912,10 @@ async def submit_async_analysis(request: AsyncAnalyzeRequest):
     """
     job_id = str(uuid.uuid4())[:8]
     
+    # Check queue capacity
+    running_count = get_running_job_count()
+    queued = running_count >= MAX_CONCURRENT_JOBS
+    
     job = AsyncJob(
         job_id=job_id,
         repo_url=request.repo_url,
@@ -1895,6 +1924,9 @@ async def submit_async_analysis(request: AsyncAnalyzeRequest):
         generate_fixes=request.generate_fixes,
         webhook_url=request.webhook_url,
     )
+    
+    if queued:
+        job.current_phase = f"Queued (position {running_count - MAX_CONCURRENT_JOBS + 1})"
     
     _jobs[job_id] = job
     
@@ -1905,14 +1937,18 @@ async def submit_async_analysis(request: AsyncAnalyzeRequest):
     add_log("info", "async_job_submitted",
             job_id=job_id,
             repo_url=request.repo_url,
-            has_webhook=bool(request.webhook_url))
+            has_webhook=bool(request.webhook_url),
+            queued=queued,
+            running_jobs=running_count)
     
-    # Estimate based on verification
-    estimated = 120 if request.verify else 60
+    # Estimate based on verification and queue
+    base_estimate = 120 if request.verify else 60
+    queue_delay = (running_count - MAX_CONCURRENT_JOBS + 1) * 60 if queued else 0
+    estimated = base_estimate + queue_delay
     
     return AsyncJobResponse(
         job_id=job_id,
-        status=job.status.value,
+        status="queued" if queued else job.status.value,
         status_url=f"/v4/jobs/{job_id}",
         estimated_seconds=estimated,
     )
