@@ -48,7 +48,7 @@ from .agent.tools import create_default_tools
 # ============================================================
 # VERSION CONSTANT
 # ============================================================
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -1428,24 +1428,50 @@ Path filter: {request.path_filter or 'all files'}
             ))
     
     async def event_generator():
-        """Generate SSE events."""
-        # Start agent in background
+        """Generate SSE events with aggressive heartbeating."""
         agent_task = asyncio.create_task(run_agent())
+        heartbeat_queue: asyncio.Queue = asyncio.Queue()
+        stop_heartbeat = asyncio.Event()
+        
+        async def heartbeat_task():
+            """Send heartbeats every 15s regardless of agent progress."""
+            while not stop_heartbeat.is_set():
+                await asyncio.sleep(15)
+                if not stop_heartbeat.is_set():
+                    await heartbeat_queue.put("heartbeat")
+        
+        heartbeat = asyncio.create_task(heartbeat_task())
         
         try:
             while True:
-                try:
-                    # Short timeout for frequent heartbeats (Railway/Cloudflare close idle connections)
-                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                event_task = asyncio.create_task(event_queue.get())
+                hb_task = asyncio.create_task(heartbeat_queue.get())
+                
+                done, pending = await asyncio.wait(
+                    [event_task, hb_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                
+                completed_task = done.pop()
+                
+                if completed_task == event_task:
+                    event = completed_task.result()
                     yield event.to_sse()
                     
-                    # Stop on done or error
                     if event.type in (EventType.DONE, EventType.ERROR):
                         break
-                except asyncio.TimeoutError:
-                    # Send heartbeat every 30s to keep connection alive
+                else:
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
+            stop_heartbeat.set()
+            heartbeat.cancel()
             if not agent_task.done():
                 agent_task.cancel()
     
@@ -1455,7 +1481,7 @@ Path filter: {request.path_filter or 'all files'}
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no",
         }
     )
 
@@ -1644,22 +1670,54 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
             ))
     
     async def event_generator():
-        """Generate SSE events."""
+        """Generate SSE events with aggressive heartbeating."""
         analysis_task = asyncio.create_task(run_analysis())
+        heartbeat_queue: asyncio.Queue = asyncio.Queue()
+        stop_heartbeat = asyncio.Event()
+        
+        async def heartbeat_task():
+            """Send heartbeats every 15s regardless of analysis progress."""
+            while not stop_heartbeat.is_set():
+                await asyncio.sleep(15)
+                if not stop_heartbeat.is_set():
+                    await heartbeat_queue.put("heartbeat")
+        
+        heartbeat = asyncio.create_task(heartbeat_task())
         
         try:
             while True:
-                try:
-                    # Short timeout for frequent heartbeats (Railway/Cloudflare close idle connections)
-                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                # Wait for either an event or a heartbeat
+                event_task = asyncio.create_task(event_queue.get())
+                hb_task = asyncio.create_task(heartbeat_queue.get())
+                
+                done, pending = await asyncio.wait(
+                    [event_task, hb_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Cancel pending tasks
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Process completed task
+                completed_task = done.pop()
+                
+                if completed_task == event_task:
+                    event = completed_task.result()
                     yield event.to_sse()
                     
                     if event.type in (EventType.DONE, EventType.ERROR):
                         break
-                except asyncio.TimeoutError:
-                    # Send heartbeat every 30s to keep connection alive
+                else:
+                    # Heartbeat
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
+            stop_heartbeat.set()
+            heartbeat.cancel()
             if not analysis_task.done():
                 analysis_task.cancel()
     
@@ -2461,21 +2519,50 @@ async def code_doctor_full_stream(request: CodeDoctorRequest):
             ))
     
     async def event_generator():
+        """Generate SSE events with aggressive heartbeating."""
         analysis_task = asyncio.create_task(run_analysis())
+        heartbeat_queue: asyncio.Queue = asyncio.Queue()
+        stop_heartbeat = asyncio.Event()
+        
+        async def heartbeat_task():
+            """Send heartbeats every 15s regardless of analysis progress."""
+            while not stop_heartbeat.is_set():
+                await asyncio.sleep(15)
+                if not stop_heartbeat.is_set():
+                    await heartbeat_queue.put("heartbeat")
+        
+        heartbeat = asyncio.create_task(heartbeat_task())
         
         try:
             while True:
-                try:
-                    # Short timeout for frequent heartbeats (Railway/Cloudflare close idle connections)
-                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                event_task = asyncio.create_task(event_queue.get())
+                hb_task = asyncio.create_task(heartbeat_queue.get())
+                
+                done, pending = await asyncio.wait(
+                    [event_task, hb_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                
+                completed_task = done.pop()
+                
+                if completed_task == event_task:
+                    event = completed_task.result()
                     yield event.to_sse()
                     
                     if event.type in (EventType.DONE, EventType.ERROR):
                         break
-                except asyncio.TimeoutError:
-                    # Send heartbeat every 30s to keep connection alive
+                else:
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
+            stop_heartbeat.set()
+            heartbeat.cancel()
             if not analysis_task.done():
                 analysis_task.cancel()
     
