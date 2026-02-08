@@ -48,7 +48,7 @@ from .agent.tools import create_default_tools
 # ============================================================
 # VERSION CONSTANT
 # ============================================================
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -63,14 +63,23 @@ async def verify_api_key(request: Request):
     """
     Verify API key if API_SECRET_KEY is set.
     
-    - If API_SECRET_KEY is not set: API is open (demo mode)
-    - If API_SECRET_KEY is set: requires X-API-Key header
-    - Health and root endpoints are always open
+    Security modes (controlled by SECURITY_MODE env var):
+    - "open": No authentication required (default for development)
+    - "strict": Fail if API_SECRET_KEY is not configured (production recommended)
+    - If API_SECRET_KEY is set: always requires X-API-Key header
     """
     api_key = get_api_key()
+    security_mode = os.environ.get("SECURITY_MODE", "open").lower()
     
-    # If no API key configured, allow all requests (demo mode)
+    # If no API key configured, check security mode
     if not api_key:
+        if security_mode == "strict":
+            # Fail-secure: reject requests if auth not configured
+            raise HTTPException(
+                status_code=500,
+                detail="Server misconfiguration: API_SECRET_KEY not set but SECURITY_MODE=strict"
+            )
+        # Default: allow requests in demo/development mode
         return
     
     # Check for API key in header

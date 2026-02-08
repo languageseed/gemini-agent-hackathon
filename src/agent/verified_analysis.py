@@ -21,6 +21,39 @@ from .stream import StreamEvent, EventType
 
 logger = structlog.get_logger()
 
+# Maximum content size for analysis (~125K tokens)
+MAX_CONTENT_CHARS = 500000
+
+
+def safe_truncate(content: str, limit: int = MAX_CONTENT_CHARS) -> str:
+    """
+    Truncate content at file boundaries to avoid cutting files mid-way.
+    
+    Files are delimited by "### path/to/file" headers. This ensures we
+    only pass complete files to the LLM, preventing hallucinated syntax errors.
+    """
+    if len(content) <= limit:
+        return content
+    
+    # Find the last file header before the limit
+    # File format: "### path/to/file.py\n```language\n...code...\n```"
+    last_header = content.rfind("\n### ", 0, limit)
+    
+    if last_header > 0:
+        # Truncate at the file boundary (before this file starts)
+        truncated = content[:last_header]
+        logger.info("content_truncated_safely", 
+                   original_chars=len(content),
+                   truncated_chars=len(truncated),
+                   files_after_limit="excluded")
+        return truncated
+    
+    # Fallback: no file headers found, truncate at limit
+    logger.warning("content_truncated_hard", 
+                  original_chars=len(content),
+                  limit=limit)
+    return content[:limit]
+
 
 class Severity(str, Enum):
     CRITICAL = "critical"
@@ -464,7 +497,7 @@ For each issue found, provide:
 Be specific and actionable. Prioritize real issues over style nitpicks.
 
 CODEBASE:
-{repo_content[:500000]}  # Limit to ~125K tokens
+{safe_truncate(repo_content)}
 """
         
         # Get analysis from Gemini

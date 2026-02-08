@@ -99,14 +99,41 @@ class CalculateTool(Tool):
         "required": ["expression"]
     }
     
+    # Explicit whitelist of safe math functions (no __import__, exec, eval, etc.)
+    SAFE_MATH_FUNCTIONS = {
+        "abs", "round", "min", "max", "sum", "pow",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+        "sqrt", "log", "log10", "log2", "exp", "expm1", "log1p",
+        "floor", "ceil", "trunc", "fabs", "factorial", "gcd",
+        "degrees", "radians", "hypot", "isfinite", "isinf", "isnan",
+        "pi", "e", "tau", "inf", "nan",
+    }
+    
     async def execute(self, arguments: dict) -> ToolResult:
         expr = arguments.get("expression", "")
         try:
-            # Safe evaluation - only math operations
-            allowed = {"__builtins__": {}}
             import math
-            allowed.update(vars(math))
-            result = eval(expr, allowed, {})
+            
+            # Build safe namespace with explicit whitelist only
+            safe_globals = {"__builtins__": None}  # Explicitly disable builtins
+            
+            # Add only whitelisted math functions
+            for name in self.SAFE_MATH_FUNCTIONS:
+                if hasattr(math, name):
+                    safe_globals[name] = getattr(math, name)
+            
+            # Add safe builtins for basic operations
+            safe_globals["abs"] = abs
+            safe_globals["round"] = round
+            safe_globals["min"] = min
+            safe_globals["max"] = max
+            safe_globals["sum"] = sum
+            safe_globals["pow"] = pow
+            safe_globals["True"] = True
+            safe_globals["False"] = False
+            
+            result = eval(expr, safe_globals, {})
             return ToolResult(output=f"{expr} = {result}")
         except Exception as e:
             return ToolResult(output=f"Error evaluating '{expr}': {e}", success=False)

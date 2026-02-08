@@ -192,7 +192,10 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
             skipped = 0
             tree_lines = []
             
-            # Process each file
+            # PHASE 1: Filter files to determine which to fetch (no network calls)
+            files_to_fetch = []
+            cumulative_size = 0
+            
             for item in tree_data.get("tree", []):
                 if item["type"] != "blob":
                     continue
@@ -224,34 +227,44 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
                     continue
                 
                 # Check total size
-                if total_size + size > MAX_TOTAL_SIZE:
+                if cumulative_size + size > MAX_TOTAL_SIZE:
                     skipped += 1
                     continue
                 
-                # Fetch file content
+                cumulative_size += size
+                files_to_fetch.append(path)
+            
+            # PHASE 2: Fetch all files in parallel (major performance improvement)
+            async def fetch_file(path: str) -> tuple[str, str | None]:
+                """Fetch a single file, return (path, content) or (path, None) on error."""
                 try:
                     content_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-                    content_response = await client.get(content_url)
-                    
-                    if content_response.status_code == 200:
-                        content = content_response.text
-                        
-                        # Detect language
+                    response = await client.get(content_url)
+                    if response.status_code == 200:
+                        return (path, response.text)
+                except Exception as e:
+                    logger.warning("file_fetch_error", path=path, error=str(e))
+                return (path, None)
+            
+            # Fetch all files concurrently
+            if files_to_fetch:
+                logger.info("fetching_files_parallel", count=len(files_to_fetch))
+                results = await asyncio.gather(*[fetch_file(p) for p in files_to_fetch])
+                
+                # PHASE 3: Process results
+                for path, content in results:
+                    if content is not None:
                         language = self._detect_language(path)
-                        
                         files.append(RepoFile(
                             path=path,
                             content=content,
                             size=len(content),
                             language=language
                         ))
-                        
                         total_size += len(content)
                         tree_lines.append(path)
-                        
-                except Exception as e:
-                    logger.warning("file_fetch_error", path=path, error=str(e))
-                    skipped += 1
+                    else:
+                        skipped += 1
             
             # Build tree representation
             tree_str = self._build_tree(tree_lines)
