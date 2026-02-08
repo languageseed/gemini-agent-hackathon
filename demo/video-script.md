@@ -1,12 +1,12 @@
-# Demo Video Script (~3 minutes)
+# Gemini Code Doctor - Demo Video Script (~3 minutes)
 
 ## Opening (0:00 - 0:15)
 
-**[Show: Title card with project name]**
+**[Show: Title card "Gemini Code Doctor"]**
 
 > "What if AI could not only find bugs in your code—but prove they exist?"
 >
-> "I'm going to show you Verified Codebase Analyst, powered by Gemini 3."
+> "I'm going to show you Gemini Code Doctor, a Vibe Engineering agent powered by Gemini 3."
 
 ## The Problem (0:15 - 0:30)
 
@@ -20,65 +20,64 @@
 
 **[Show: Architecture diagram]**
 
-> "Verified Codebase Analyst takes a different approach:
-> 1. Send the codebase to Gemini 3's large context window
-> 2. Identify potential issues
-> 3. Generate tests that FAIL if the bug exists
-> 4. Execute those tests in sandboxes
-> 5. Report verified issues with proposed fixes"
+> "Gemini Code Doctor takes a three-phase approach:
+> 1. **Security Scan** - Find secrets and vulnerabilities
+> 2. **Verified Analysis** - Identify bugs, generate tests, prove they exist
+> 3. **Evolution Advice** - Recommend architecture improvements
+>
+> All powered by Gemini 3's 2-million token context window."
 
-## Live Demo - Web UI (0:50 - 1:40)
+## Live Demo - Self-Analysis (0:50 - 1:50)
 
-**[Show: Frontend UI]**
+**[Show: Frontend UI at gemini-frontend-murex.vercel.app]**
 
-> "Let me show you this in action."
+> "Let me show you something special—the agent analyzing its own codebase."
 
-**[Action: Paste a GitHub repo URL, select 'security' focus, enable 'Verify Findings']**
+**[Action: Paste https://github.com/languageseed/gemini-agent-hackathon]**
 
-> "I'll analyze this project for security issues."
+> "I'm going to have Code Doctor analyze itself."
 
 **[Action: Click 'Analyze & Verify']**
 
-> "Watch the live progress—issues discovered, tests generated, verification running..."
+> "Watch the live progress—cloning, analyzing, discovering issues..."
+
+**[Show progress: Issues being found]**
+
+> "It found security issues... performance problems... architecture concerns..."
+
+**[Show verification progress]**
+
+> "Now it's generating tests for each issue. If the test FAILS, the bug is VERIFIED."
 
 **[Wait for completion, show results]**
 
-> "Here's a verified security issue. The test proved it exists. And here's the AI-generated fix—one click to copy."
+> "8 issues found. 8 verified. 100% verification rate."
+>
+> "Here's a verified security issue—the test proved it exists. And here's the AI-generated fix."
 
-## Live Demo - CLI & API (1:40 - 2:20)
+## Key Features (1:50 - 2:20)
 
-**[Show: Terminal]**
+**[Show: Results detail]**
 
-> "For CI/CD integration, we have a Python client."
+> "Each finding includes:
+> - The problematic code
+> - A recommendation
+> - The verification test that proved it
+> - An AI-generated fix ready to copy"
 
-**[Action: Run CLI command]**
+**[Show: Export button / Markdown output]**
 
-```bash
-gemini-analyst analyze https://github.com/owner/repo --focus bugs
-```
-
-> "Submit jobs asynchronously, poll for status, or set up webhooks for completion notifications."
-
-**[Show: Python code example]**
-
-```python
-from gemini_analyst import AnalystClient
-client = AnalystClient()
-report = client.analyze("https://github.com/owner/repo")
-print(f"Found {report.verified_count} verified bugs")
-```
-
-> "Full programmatic access—integrate verified analysis into your pipeline."
+> "Export the full report as Markdown for your team."
 
 ## Technical Highlights (2:20 - 2:45)
 
-**[Show: /diagnostics endpoint]**
+**[Show: /health endpoint or architecture]**
 
 > "Under the hood:
-> - Gemini 3 Pro Preview for reasoning
+> - Gemini 3 Pro with 2M context—no RAG needed
 > - E2B sandboxes for safe test execution
-> - Async job queue with concurrency limits
-> - Full observability—metrics, logs, diagnostics"
+> - Parallel file fetching for speed
+> - Real-time streaming with SSE"
 
 ## Closing (2:45 - 3:00)
 
@@ -86,7 +85,9 @@ print(f"Found {report.verified_count} verified bugs")
 
 > "This is Vibe Engineering—AI that verifies its own work."
 >
-> "Verified Codebase Analyst. Try it at the link below."
+> "When we ran this on our own codebase, we found and fixed real bugs."
+>
+> "Gemini Code Doctor. Try it at the link below."
 >
 > "Thank you."
 
@@ -94,7 +95,11 @@ print(f"Found {report.verified_count} verified bugs")
 
 ## Recording Notes
 
-- **Demo repos to use:** Pick 2-3 small repos with known issues
-- **Fallback:** Have screenshots ready if API is slow
-- **Terminal:** Keep visible to show real-time streaming
-- **Timing:** Web demo ~50s, CLI demo ~40s, keeps under 3 min
+- **Demo repo:** Use the agent's own repo (self-analysis is impressive)
+- **Fallback:** Have the markdown export ready as static content
+- **Key moment:** The 100% verification rate (8/8) is the "wow" factor
+- **Timing:** Self-analysis demo ~60s, features ~30s, keeps under 3 min
+- **URLs to show:**
+  - Demo: https://gemini-frontend-murex.vercel.app
+  - API: https://gemini-agent-hackathon-production.up.railway.app
+  - GitHub: https://github.com/languageseed/gemini-agent-hackathon

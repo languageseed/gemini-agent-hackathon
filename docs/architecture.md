@@ -17,7 +17,7 @@
                                  │ SSE Streaming
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           BACKEND API (v0.6.0)                              │
+│                           BACKEND API (v0.7.2)                              │
 │                          (FastAPI on Railway)                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
@@ -153,7 +153,7 @@ Built-in monitoring and debugging:
 | Secrets | Doppler |
 | Client | Python package with CLI (`gemini-analyst`) |
 
-## API Features (v0.6.0)
+## API Features (v0.7.2)
 
 ### Async Job System
 - `POST /v4/analyze/async` - Submit job, returns immediately
