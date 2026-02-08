@@ -216,7 +216,7 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
         else:
             logger.warning("github_unauthenticated", rate_limit="60/hr")
         
-        async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=60.0, headers=headers, follow_redirects=False) as client:
             # Get default branch if not specified
             if not branch:
                 repo_info = await client.get(
@@ -283,21 +283,24 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
                 cumulative_size += size
                 files_to_fetch.append(path)
             
-            # PHASE 2: Fetch all files in parallel (major performance improvement)
-            async def fetch_file(path: str) -> tuple[str, str | None]:
-                """Fetch a single file, return (path, content) or (path, None) on error."""
-                try:
-                    content_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-                    response = await client.get(content_url)
-                    if response.status_code == 200:
-                        return (path, response.text)
-                except Exception as e:
-                    logger.warning("file_fetch_error", path=path, error=str(e))
-                return (path, None)
+            # PHASE 2: Fetch files with bounded concurrency
+            concurrency_limit = asyncio.Semaphore(10)  # Max 10 concurrent requests
             
-            # Fetch all files concurrently
+            async def fetch_file(path: str) -> tuple[str, str | None]:
+                """Fetch a single file with concurrency limiting."""
+                async with concurrency_limit:
+                    try:
+                        content_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+                        response = await client.get(content_url)
+                        if response.status_code == 200:
+                            return (path, response.text)
+                    except Exception as e:
+                        logger.warning("file_fetch_error", path=path, error=str(e))
+                    return (path, None)
+            
+            # Fetch all files with bounded concurrency (semaphore limits to 10 at a time)
             if files_to_fetch:
-                logger.info("fetching_files_parallel", count=len(files_to_fetch))
+                logger.info("fetching_files_parallel", count=len(files_to_fetch), max_concurrent=10)
                 results = await asyncio.gather(*[fetch_file(p) for p in files_to_fetch])
                 
                 # PHASE 3: Process results

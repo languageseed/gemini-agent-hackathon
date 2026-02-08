@@ -406,8 +406,17 @@ def validate_test_code(code: str) -> tuple[bool, str]:
     except SyntaxError as e:
         return False, f"Syntax error: {e}"
     
-    # Check it has some form of assertion or test
-    if 'assert' not in code and 'raise' not in code and 'error' not in code_lower:
+    # Check it has some form of assertion or test (support multiple patterns)
+    has_assert = 'assert' in code
+    has_raise = 'raise' in code
+    has_error = 'error' in code_lower
+    has_unittest = 'unittest' in code and any(
+        m in code for m in ['assertEqual', 'assertTrue', 'assertFalse', 'assertRaises',
+                            'assertIn', 'assertIsNone', 'self.fail']
+    )
+    has_exit = 'sys.exit' in code
+    
+    if not (has_assert or has_raise or has_error or has_unittest or has_exit):
         return False, "Test has no assertions"
     
     return True, ""
@@ -566,11 +575,24 @@ CODEBASE:
             severity_order = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
             sorted_issues = sorted(issues, key=lambda i: severity_order.get(i.severity, 3))
             
-            for issue in sorted_issues[:max_issues_to_verify]:
-                check_timeout()  # Check before each verification
-                await self._verify_issue(issue, emit)
+            verified_count = 0
+            try:
+                for issue in sorted_issues[:max_issues_to_verify]:
+                    check_timeout()  # Check before each verification
+                    await self._verify_issue(issue, emit)
+                    verified_count += 1
+            except TimeoutError:
+                logger.warning("verification_timeout", verified=verified_count, total=len(sorted_issues))
+                emit(EventType.THINKING, {
+                    "phase": "timeout",
+                    "message": f"Time limit reached after verifying {verified_count} issues. Returning partial results."
+                })
+                # Mark remaining unverified issues as skipped
+                for issue in sorted_issues[verified_count:max_issues_to_verify]:
+                    if issue.verification_status == VerificationStatus.PENDING:
+                        issue.verification_status = VerificationStatus.SKIPPED
             
-            # Mark remaining as skipped
+            # Mark issues beyond max as skipped
             for issue in sorted_issues[max_issues_to_verify:]:
                 issue.verification_status = VerificationStatus.SKIPPED
             

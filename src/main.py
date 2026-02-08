@@ -48,7 +48,7 @@ from .agent.tools import create_default_tools
 # ============================================================
 # VERSION CONSTANT
 # ============================================================
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -192,7 +192,14 @@ def get_session_store() -> SessionStore:
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     logger.info("starting_gemini_agent", model=get_model_name())
+    
+    # Start background cleanup task for async jobs
+    cleanup_task = asyncio.create_task(cleanup_old_jobs())
+    
     yield
+    
+    # Cancel cleanup on shutdown
+    cleanup_task.cancel()
     logger.info("shutting_down")
 
 
@@ -1822,13 +1829,49 @@ class AsyncJob:
     updated_at: float = field(default_factory=time.time)
 
 
-# In-memory job store (use Redis for production)
+# In-memory job store with automatic cleanup
 _jobs: dict[str, AsyncJob] = {}
 _job_tasks: dict[str, asyncio.Task] = {}
 
 # Concurrency control
 MAX_CONCURRENT_JOBS = 3  # Limit concurrent verification jobs
 _job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+
+# Job retention: completed jobs are cleaned up after 1 hour
+JOB_RETENTION_SECONDS = 3600  # 1 hour
+JOB_CLEANUP_INTERVAL = 300    # Check every 5 minutes
+MAX_STORED_JOBS = 100         # Hard cap on stored jobs
+
+
+async def cleanup_old_jobs():
+    """Background task to periodically remove completed/failed jobs older than retention period."""
+    while True:
+        await asyncio.sleep(JOB_CLEANUP_INTERVAL)
+        try:
+            cutoff = time.time() - JOB_RETENTION_SECONDS
+            to_remove = [
+                k for k, v in _jobs.items()
+                if v.status in (JobStatus.COMPLETED, JobStatus.FAILED)
+                and v.updated_at < cutoff
+            ]
+            for k in to_remove:
+                del _jobs[k]
+                _job_tasks.pop(k, None)
+            
+            # Hard cap: if still too many, remove oldest completed first
+            if len(_jobs) > MAX_STORED_JOBS:
+                completed = sorted(
+                    [(k, v) for k, v in _jobs.items() if v.status in (JobStatus.COMPLETED, JobStatus.FAILED)],
+                    key=lambda x: x[1].updated_at
+                )
+                for k, _ in completed[:len(_jobs) - MAX_STORED_JOBS]:
+                    del _jobs[k]
+                    _job_tasks.pop(k, None)
+            
+            if to_remove:
+                logger.info("jobs_cleanup", removed=len(to_remove), remaining=len(_jobs))
+        except Exception as e:
+            logger.warning("jobs_cleanup_error", error=str(e))
 
 
 def get_running_job_count() -> int:
