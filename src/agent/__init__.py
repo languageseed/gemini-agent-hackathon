@@ -19,6 +19,7 @@ from .verified_analysis import (
     AnalysisResult,
     Severity,
     Category,
+    IssueType,
     VerificationStatus,
 )
 from .security import (

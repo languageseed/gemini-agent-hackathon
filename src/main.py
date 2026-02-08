@@ -48,7 +48,7 @@ from .agent.tools import create_default_tools
 # ============================================================
 # VERSION CONSTANT
 # ============================================================
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -523,13 +523,21 @@ _metrics = {
 # Log buffer - keeps last 100 log entries in memory
 _log_buffer: deque = deque(maxlen=100)
 
+MAX_LOG_VALUE_SIZE = 500  # Truncate large values in log entries
+
 def add_log(level: str, event: str, **kwargs):
     """Add a log entry to the buffer and structlog."""
+    # Truncate large values to prevent memory bloat
+    safe_kwargs = {}
+    for k, v in kwargs.items():
+        val_str = str(v)
+        safe_kwargs[k] = val_str[:MAX_LOG_VALUE_SIZE] + "...(truncated)" if len(val_str) > MAX_LOG_VALUE_SIZE else v
+    
     entry = {
         "timestamp": datetime.datetime.utcnow().isoformat(),
         "level": level,
         "event": event,
-        **kwargs
+        **safe_kwargs
     }
     _log_buffer.append(entry)
     

@@ -70,6 +70,13 @@ class Category(str, Enum):
     ARCHITECTURE = "architecture"
 
 
+class IssueType(str, Enum):
+    """Distinguishes actionable bugs from advisory observations."""
+    DEFECT = "defect"              # Actual bug or vulnerability that should be fixed
+    DESIGN_TRADEOFF = "tradeoff"   # Known tradeoff / intentional decision (advisory)
+    OBSERVATION = "observation"    # Architectural opinion or suggestion (informational)
+
+
 class VerificationStatus(str, Enum):
     PENDING = "pending"
     VERIFIED = "verified"      # Test failed as expected = bug confirmed
@@ -95,6 +102,7 @@ class Issue:
     category: Category
     file_path: str
     line_number: Optional[int] = None
+    issue_type: IssueType = IssueType.DEFECT  # defect, tradeoff, or observation
     code_snippet: Optional[str] = None
     recommendation: Optional[str] = None
     recommended_code: Optional[str] = None
@@ -119,6 +127,7 @@ class Issue:
             "description": self.description,
             "severity": self.severity.value,
             "category": self.category.value,
+            "issue_type": self.issue_type.value,
             "file_path": self.file_path,
             "line_number": self.line_number,
             "code_snippet": self.code_snippet,
@@ -172,11 +181,21 @@ For each issue, provide:
 - description: Detailed description
 - severity: "critical", "high", "medium", or "low"
 - category: "bug", "security", "performance", "style", or "architecture"
+- issue_type: Classify each finding as one of:
+  - "defect": An actual bug, vulnerability, or error that will cause problems and should be fixed
+  - "tradeoff": A known design decision or intentional tradeoff (e.g., "fail-open auth for demo mode", "in-memory storage for hackathon"). Flag it but note WHY it may be intentional.
+  - "observation": An architectural opinion, suggestion, or best-practice recommendation that isn't a bug (e.g., "file is too long", "consider using X pattern")
 - file_path: Path to the file (e.g., "src/api/users.py")
 - line_number: Line number if known, null otherwise
 - code_snippet: The problematic code (max 10 lines)
 - recommendation: How to fix it
 - recommended_code: Fixed code example
+
+IMPORTANT classification guidance:
+- If the code has explicit comments like "by design", "intentional", "hackathon", "tradeoff", treat it as "tradeoff"
+- If the code already has mitigations in place (env var gating, validation, etc.), note them in description
+- Architecture opinions (file too big, should use different pattern) are "observation"
+- Only use "defect" for things that will actually break, leak data, or be exploited
 
 Return ONLY a JSON array, no markdown, no explanation:
 [
@@ -185,6 +204,7 @@ Return ONLY a JSON array, no markdown, no explanation:
     "description": "...",
     "severity": "...",
     "category": "...",
+    "issue_type": "defect|tradeoff|observation",
     "file_path": "...",
     "line_number": null,
     "code_snippet": "...",
@@ -209,10 +229,13 @@ Problematic code:
 
 CRITICAL REQUIREMENTS:
 1. SELF-CONTAINED: Copy/embed the problematic code directly into your test file
-2. NO EXTERNAL IMPORTS: Only use Python standard library (os, sys, re, json, typing, etc.)
-3. NO PIP PACKAGES: Do not import requests, numpy, pandas, fastapi, pydantic, etc.
-4. NO FILE ACCESS: Do not read/write files - embed all test data as strings
-5. ASSERTION TEST: Use assert that FAILS if the bug exists, PASSES if fixed
+2. EXACT CODE: You MUST copy the EXACT problematic code from the snippet above. Do NOT simplify, rephrase, or create a "mock" version of the code. The test must prove the bug exists in the ACTUAL code, not in a made-up version.
+3. NO EXTERNAL IMPORTS: Only use Python standard library (os, sys, re, json, typing, etc.)
+4. NO PIP PACKAGES: Do not import requests, numpy, pandas, fastapi, pydantic, etc.
+5. NO FILE ACCESS: Do not read/write files - embed all test data as strings
+6. ASSERTION TEST: Use assert that FAILS if the bug exists, PASSES if fixed
+
+CRITICAL: If the code snippet already contains mitigations (e.g., validation, guards, env var checks), your test MUST include those mitigations exactly as written. Do not strip them out to create a false failure.
 
 FORBIDDEN (will cause test to error):
 - import requests, httpx, aiohttp
@@ -232,9 +255,9 @@ Example structure:
 ```python
 # Test for: {title}
 
-# STEP 1: Embed the buggy code (simplified if needed)
+# STEP 1: Embed the EXACT buggy code from the codebase
 def buggy_function(x):
-    # Paste or recreate the logic with the bug
+    # EXACT copy of the problematic logic - do not simplify
     return x  # buggy implementation
 
 # STEP 2: Test that exposes the bug
@@ -329,6 +352,20 @@ def parse_issues_from_json(json_str: str) -> list[Issue]:
                 }
                 category_str = category_map.get(category_str, "bug")
                 
+                # Parse issue_type (defect, tradeoff, observation)
+                issue_type_str = item.get("issue_type", "defect").lower()
+                issue_type_map = {
+                    "defect": "defect",
+                    "bug": "defect",
+                    "tradeoff": "tradeoff",
+                    "trade-off": "tradeoff",
+                    "design": "tradeoff",
+                    "observation": "observation",
+                    "suggestion": "observation",
+                    "advisory": "observation",
+                }
+                issue_type_str = issue_type_map.get(issue_type_str, "defect")
+                
                 issue = Issue(
                     id=str(uuid.uuid4())[:8],
                     title=item.get("title", "Unknown Issue"),
@@ -336,6 +373,7 @@ def parse_issues_from_json(json_str: str) -> list[Issue]:
                     severity=Severity(item.get("severity", "medium").lower()),
                     category=Category(category_str),
                     file_path=item.get("file_path", "unknown"),
+                    issue_type=IssueType(issue_type_str),
                     line_number=item.get("line_number"),
                     code_snippet=item.get("code_snippet"),
                     recommendation=item.get("recommendation"),
@@ -823,12 +861,22 @@ CODEBASE:
         verified = sum(1 for i in issues if i.verification_status == VerificationStatus.VERIFIED)
         unverified = sum(1 for i in issues if i.verification_status == VerificationStatus.UNVERIFIED)
         
+        # Count by issue type
+        defects = [i for i in issues if i.issue_type == IssueType.DEFECT]
+        tradeoffs = [i for i in issues if i.issue_type == IssueType.DESIGN_TRADEOFF]
+        observations = [i for i in issues if i.issue_type == IssueType.OBSERVATION]
+        
         summary = f"""## Analysis Summary for {repo_url}
 
 **Focus:** {focus}
-**Total Issues:** {len(issues)}
+**Total Findings:** {len(issues)}
 **Verified:** {verified} (confirmed via automated tests)
 **Unverified:** {unverified} (may be false positives)
+
+### By Type
+- 🐛 Defects (actionable bugs): {len(defects)}
+- ⚖️ Design Tradeoffs (intentional decisions): {len(tradeoffs)}
+- 💡 Observations (suggestions): {len(observations)}
 
 ### By Severity
 - 🔴 Critical: {severity_counts[Severity.CRITICAL]}
