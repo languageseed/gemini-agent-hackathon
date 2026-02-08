@@ -48,7 +48,7 @@ from .agent.tools import create_default_tools
 # ============================================================
 # VERSION CONSTANT
 # ============================================================
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -2024,6 +2024,594 @@ async def cancel_job(job_id: str):
     add_log("info", "async_job_cancelled", job_id=job_id)
     
     return {"message": "Job cancelled", "job_id": job_id}
+
+
+# ============================================================
+# V5: CODE DOCTOR - Full Analysis Suite
+# ============================================================
+# Combines:
+# - Security scanning (secrets, config issues)
+# - Code analysis with verification
+# - Evolution/roadmap recommendations
+#
+# This is the "Code Doctor" - comprehensive health check for codebases.
+# ============================================================
+
+from .agent.security import (
+    SecretScanner,
+    SecurityFinding,
+    scan_codebase_for_secrets,
+    Severity as SecuritySeverity,
+)
+from .agent.evolution import (
+    EvolutionAdvisor,
+    EvolutionReport,
+)
+
+
+class CodeDoctorRequest(BaseModel):
+    """Request for full Code Doctor analysis."""
+    repo_url: str
+    branch: Optional[str] = None
+    
+    # Analysis toggles
+    run_security_scan: bool = True
+    run_code_analysis: bool = True
+    run_evolution_analysis: bool = True
+    
+    # Options
+    max_issues_to_verify: int = 10
+    evolution_focus: str = "full"  # full, architecture, security, performance, testing, debt, devops
+
+
+class CodeDoctorResponse(BaseModel):
+    """Response from Code Doctor analysis."""
+    repo_url: str
+    analysis_time_seconds: float
+    
+    # Security scan results
+    security_findings: List[dict]
+    security_summary: dict
+    
+    # Code analysis results (verified issues)
+    code_issues: List[dict]
+    code_summary: dict
+    
+    # Evolution recommendations
+    evolution_recommendations: List[dict]
+    evolution_summary: dict
+    
+    # Overall health
+    overall_health_score: float
+    executive_summary: str
+
+
+@app.post("/v5/analyze/full", response_model=CodeDoctorResponse, dependencies=[Depends(verify_api_key)])
+async def code_doctor_full(request: CodeDoctorRequest):
+    """
+    Code Doctor - Comprehensive Codebase Health Check.
+    
+    Three-phase analysis:
+    1. **Security Scan**: Pattern-based detection of secrets, credentials, misconfigurations
+    2. **Code Analysis**: AI-powered bug/issue detection with verification
+    3. **Evolution Advisor**: Strategic recommendations for codebase improvement
+    
+    Returns a unified health report with:
+    - Security findings (secrets, vulnerabilities)
+    - Verified code issues (confirmed bugs)
+    - Evolution roadmap (tech debt, improvements)
+    - Overall health score
+    
+    This is "Vibe Engineering" - the agent analyzes, verifies, AND recommends.
+    """
+    import time as time_module
+    
+    start_time = time_module.time()
+    
+    add_log("info", "code_doctor_started",
+            repo_url=request.repo_url,
+            security=request.run_security_scan,
+            analysis=request.run_code_analysis,
+            evolution=request.run_evolution_analysis)
+    
+    client = get_gemini_client()
+    
+    # Clone repository first
+    from .agent.tools_github import CloneRepoTool
+    
+    clone_tool = CloneRepoTool()
+    clone_result = await clone_tool.execute({
+        "repo_url": request.repo_url,
+        "branch": request.branch,
+    })
+    
+    if not clone_result.success:
+        raise HTTPException(status_code=400, detail=f"Failed to clone repository: {clone_result.output}")
+    
+    repo_content = clone_result.output
+    
+    # Initialize results
+    security_findings = []
+    security_summary = {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0}
+    
+    code_issues = []
+    code_summary = {"total": 0, "verified": 0, "unverified": 0}
+    
+    evolution_recommendations = []
+    evolution_summary = {"total": 0, "quick_wins": 0, "health_score": 0}
+    
+    # ============================================================
+    # PHASE 1: Security Scan (fast, pattern-based)
+    # ============================================================
+    if request.run_security_scan:
+        add_log("info", "code_doctor_security_scan", repo_url=request.repo_url)
+        
+        findings = scan_codebase_for_secrets(repo_content)
+        security_findings = [f.to_dict() for f in findings]
+        
+        security_summary = {
+            "total": len(findings),
+            "critical": sum(1 for f in findings if f.severity == SecuritySeverity.CRITICAL),
+            "high": sum(1 for f in findings if f.severity == SecuritySeverity.HIGH),
+            "medium": sum(1 for f in findings if f.severity == SecuritySeverity.MEDIUM),
+            "low": sum(1 for f in findings if f.severity == SecuritySeverity.LOW),
+        }
+    
+    # ============================================================
+    # PHASE 2: Code Analysis with Verification (AI-powered)
+    # ============================================================
+    if request.run_code_analysis:
+        add_log("info", "code_doctor_code_analysis", repo_url=request.repo_url)
+        
+        analyzer = VerifiedAnalyzer(
+            client=client,
+            model=get_reasoning_model(),
+            code_executor=execute_code_in_sandbox,
+        )
+        
+        analysis_result = await analyzer.analyze_and_verify(
+            repo_content=repo_content,
+            repo_url=request.repo_url,
+            focus="all",
+            max_issues_to_verify=request.max_issues_to_verify,
+        )
+        
+        code_issues = [i.to_dict() for i in analysis_result.issues]
+        code_summary = {
+            "total": analysis_result.total_issues,
+            "verified": analysis_result.verified_count,
+            "unverified": analysis_result.unverified_count,
+        }
+    
+    # ============================================================
+    # PHASE 3: Evolution Analysis (AI-powered)
+    # ============================================================
+    if request.run_evolution_analysis:
+        add_log("info", "code_doctor_evolution", repo_url=request.repo_url)
+        
+        advisor = EvolutionAdvisor(
+            client=client,
+            model=get_reasoning_model(),
+        )
+        
+        evolution_report = await advisor.analyze(
+            repo_content=repo_content,
+            repo_url=request.repo_url,
+            focus=request.evolution_focus,
+        )
+        
+        evolution_recommendations = [r.to_dict() for r in evolution_report.recommendations]
+        evolution_summary = {
+            "total": len(evolution_report.recommendations),
+            "quick_wins": len(evolution_report.quick_wins),
+            "health_score": evolution_report.health_score,
+            "maturity_level": evolution_report.maturity_level,
+        }
+    
+    # ============================================================
+    # Calculate Overall Health Score
+    # ============================================================
+    # Weighted average:
+    # - Security: 30% (critical secrets = major penalty)
+    # - Code quality: 40% (verified bugs = penalty)
+    # - Evolution health: 30% (from advisor)
+    
+    security_score = 100
+    if security_summary["total"] > 0:
+        security_score -= (security_summary["critical"] * 25)
+        security_score -= (security_summary["high"] * 10)
+        security_score -= (security_summary["medium"] * 3)
+        security_score = max(0, security_score)
+    
+    code_score = 100
+    if code_summary["total"] > 0:
+        verified_penalty = code_summary["verified"] * 15
+        unverified_penalty = code_summary["unverified"] * 5
+        code_score = max(0, 100 - verified_penalty - unverified_penalty)
+    
+    evolution_score = evolution_summary.get("health_score", 50)
+    
+    overall_health = (
+        (security_score * 0.30) +
+        (code_score * 0.40) +
+        (evolution_score * 0.30)
+    )
+    
+    # ============================================================
+    # Generate Executive Summary
+    # ============================================================
+    critical_items = []
+    
+    if security_summary["critical"] > 0:
+        critical_items.append(f"{security_summary['critical']} critical secrets exposed")
+    
+    if code_summary["verified"] > 0:
+        critical_items.append(f"{code_summary['verified']} verified bugs")
+    
+    if evolution_summary.get("maturity_level") == "legacy":
+        critical_items.append("codebase shows legacy patterns")
+    
+    if critical_items:
+        urgency = "🔴 URGENT: " + ", ".join(critical_items)
+    else:
+        urgency = "✅ No critical issues detected"
+    
+    executive_summary = f"""## Code Doctor Report for {request.repo_url}
+
+**Overall Health Score: {overall_health:.0f}/100**
+
+{urgency}
+
+### Security ({security_summary['total']} findings)
+- Critical: {security_summary['critical']} | High: {security_summary['high']} | Medium: {security_summary['medium']}
+
+### Code Quality ({code_summary['total']} issues)
+- Verified bugs: {code_summary['verified']} | Potential issues: {code_summary['unverified']}
+
+### Evolution ({evolution_summary['total']} recommendations)
+- Quick wins available: {evolution_summary['quick_wins']}
+- Maturity level: {evolution_summary.get('maturity_level', 'N/A')}
+"""
+    
+    total_time = time_module.time() - start_time
+    
+    add_log("info", "code_doctor_completed",
+            repo_url=request.repo_url,
+            health_score=overall_health,
+            security_findings=security_summary["total"],
+            code_issues=code_summary["total"],
+            evolution_recs=evolution_summary["total"],
+            duration_seconds=round(total_time, 2))
+    
+    _metrics["analyses"]["total"] += 1
+    
+    return CodeDoctorResponse(
+        repo_url=request.repo_url,
+        analysis_time_seconds=total_time,
+        security_findings=security_findings,
+        security_summary=security_summary,
+        code_issues=code_issues,
+        code_summary=code_summary,
+        evolution_recommendations=evolution_recommendations,
+        evolution_summary=evolution_summary,
+        overall_health_score=overall_health,
+        executive_summary=executive_summary,
+    )
+
+
+@app.post("/v5/analyze/full/stream", dependencies=[Depends(verify_api_key)])
+async def code_doctor_full_stream(request: CodeDoctorRequest):
+    """
+    Code Doctor with SSE streaming - see progress in real-time.
+    
+    Streams events:
+    - phase_start: New phase beginning (security, analysis, evolution)
+    - finding: Security finding detected
+    - issue: Code issue found
+    - verify_result: Issue verification result
+    - recommendation: Evolution recommendation
+    - done: Complete with full results
+    """
+    import asyncio
+    import time as time_module
+    
+    start_time = time_module.time()
+    client = get_gemini_client()
+    event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+    
+    def on_event(event: StreamEvent):
+        event_queue.put_nowait(event)
+    
+    async def run_analysis():
+        """Run all three analysis phases."""
+        try:
+            # Clone repo
+            on_event(StreamEvent(
+                type=EventType.TOOL_START,
+                data={"phase": "clone", "message": "Cloning repository..."}
+            ))
+            
+            from .agent.tools_github import CloneRepoTool
+            
+            clone_tool = CloneRepoTool()
+            clone_result = await clone_tool.execute({
+                "repo_url": request.repo_url,
+                "branch": request.branch,
+            })
+            
+            if not clone_result.success:
+                on_event(StreamEvent(
+                    type=EventType.ERROR,
+                    data={"error": f"Failed to clone: {clone_result.output}"}
+                ))
+                return
+            
+            repo_content = clone_result.output
+            
+            security_findings = []
+            code_issues = []
+            evolution_recs = []
+            evolution_health = 50
+            maturity = "unknown"
+            
+            # Phase 1: Security
+            if request.run_security_scan:
+                on_event(StreamEvent(
+                    type=EventType.THINKING,
+                    data={"phase": "security", "message": "Scanning for secrets and misconfigurations..."}
+                ))
+                
+                findings = scan_codebase_for_secrets(repo_content)
+                security_findings = [f.to_dict() for f in findings]
+                
+                for finding in findings:
+                    on_event(StreamEvent(
+                        type=EventType.TOOL_RESULT,
+                        data={"type": "security_finding", "finding": finding.to_dict()}
+                    ))
+            
+            # Phase 2: Code Analysis
+            if request.run_code_analysis:
+                on_event(StreamEvent(
+                    type=EventType.THINKING,
+                    data={"phase": "analysis", "message": "Analyzing code for bugs and issues..."}
+                ))
+                
+                analyzer = VerifiedAnalyzer(
+                    client=client,
+                    model=get_reasoning_model(),
+                    code_executor=execute_code_in_sandbox,
+                )
+                
+                analysis_result = await analyzer.analyze_and_verify(
+                    repo_content=repo_content,
+                    repo_url=request.repo_url,
+                    focus="all",
+                    on_event=on_event,
+                    max_issues_to_verify=request.max_issues_to_verify,
+                )
+                
+                code_issues = [i.to_dict() for i in analysis_result.issues]
+            
+            # Phase 3: Evolution
+            if request.run_evolution_analysis:
+                on_event(StreamEvent(
+                    type=EventType.THINKING,
+                    data={"phase": "evolution", "message": "Generating evolution recommendations..."}
+                ))
+                
+                advisor = EvolutionAdvisor(
+                    client=client,
+                    model=get_reasoning_model(),
+                )
+                
+                evolution_report = await advisor.analyze(
+                    repo_content=repo_content,
+                    repo_url=request.repo_url,
+                    focus=request.evolution_focus,
+                    on_event=on_event,
+                )
+                
+                evolution_recs = [r.to_dict() for r in evolution_report.recommendations]
+                evolution_health = evolution_report.health_score
+                maturity = evolution_report.maturity_level
+            
+            # Calculate overall health
+            sec_critical = sum(1 for f in security_findings if f.get("severity") == "critical")
+            sec_high = sum(1 for f in security_findings if f.get("severity") == "high")
+            verified_bugs = sum(1 for i in code_issues if i.get("verification_status") == "verified")
+            
+            security_score = max(0, 100 - (sec_critical * 25) - (sec_high * 10))
+            code_score = max(0, 100 - (verified_bugs * 15))
+            overall_health = (security_score * 0.3) + (code_score * 0.4) + (evolution_health * 0.3)
+            
+            # Done
+            on_event(StreamEvent(
+                type=EventType.DONE,
+                data={
+                    "repo_url": request.repo_url,
+                    "analysis_time_seconds": time_module.time() - start_time,
+                    "security_findings": security_findings,
+                    "security_summary": {
+                        "total": len(security_findings),
+                        "critical": sec_critical,
+                        "high": sec_high,
+                    },
+                    "code_issues": code_issues,
+                    "code_summary": {
+                        "total": len(code_issues),
+                        "verified": verified_bugs,
+                    },
+                    "evolution_recommendations": evolution_recs,
+                    "evolution_summary": {
+                        "total": len(evolution_recs),
+                        "health_score": evolution_health,
+                        "maturity_level": maturity,
+                    },
+                    "overall_health_score": overall_health,
+                }
+            ))
+            
+        except Exception as e:
+            on_event(StreamEvent(
+                type=EventType.ERROR,
+                data={"error": str(e)}
+            ))
+    
+    async def event_generator():
+        analysis_task = asyncio.create_task(run_analysis())
+        
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=300.0)
+                    yield event.to_sse()
+                    
+                    if event.type in (EventType.DONE, EventType.ERROR):
+                        break
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            if not analysis_task.done():
+                analysis_task.cancel()
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.get("/v5/analyze/security", dependencies=[Depends(verify_api_key)])
+async def security_scan_only(repo_url: str, branch: Optional[str] = None):
+    """
+    Quick security scan only - no AI, just pattern matching.
+    
+    Fast scan for secrets and credentials.
+    """
+    from .agent.tools_github import CloneRepoTool
+    import time as time_module
+    
+    start_time = time_module.time()
+    
+    clone_tool = CloneRepoTool()
+    clone_result = await clone_tool.execute({
+        "repo_url": repo_url,
+        "branch": branch,
+    })
+    
+    if not clone_result.success:
+        raise HTTPException(status_code=400, detail=f"Failed to clone: {clone_result.output}")
+    
+    findings = scan_codebase_for_secrets(clone_result.output)
+    
+    return {
+        "repo_url": repo_url,
+        "scan_time_seconds": time_module.time() - start_time,
+        "findings": [f.to_dict() for f in findings],
+        "summary": {
+            "total": len(findings),
+            "critical": sum(1 for f in findings if f.severity == SecuritySeverity.CRITICAL),
+            "high": sum(1 for f in findings if f.severity == SecuritySeverity.HIGH),
+            "medium": sum(1 for f in findings if f.severity == SecuritySeverity.MEDIUM),
+            "low": sum(1 for f in findings if f.severity == SecuritySeverity.LOW),
+        },
+    }
+
+
+@app.post("/v5/analyze/evolution", dependencies=[Depends(verify_api_key)])
+async def evolution_analysis_only(request: AnalyzeRepoRequest):
+    """
+    Evolution analysis only - strategic recommendations.
+    
+    Analyzes codebase for:
+    - Technical debt
+    - Architecture improvements
+    - Feature roadmap
+    - Quick wins
+    """
+    from .agent.tools_github import CloneRepoTool
+    
+    client = get_gemini_client()
+    
+    clone_tool = CloneRepoTool()
+    clone_result = await clone_tool.execute({
+        "repo_url": request.repo_url,
+        "branch": request.branch,
+    })
+    
+    if not clone_result.success:
+        raise HTTPException(status_code=400, detail=f"Failed to clone: {clone_result.output}")
+    
+    advisor = EvolutionAdvisor(
+        client=client,
+        model=get_reasoning_model(),
+    )
+    
+    report = await advisor.analyze(
+        repo_content=clone_result.output,
+        repo_url=request.repo_url,
+        focus=request.focus,
+    )
+    
+    return report.to_dict()
+
+
+# ============================================================
+# UPDATE ROOT ENDPOINT TO SHOW V5
+# ============================================================
+
+# Override root to include v5
+@app.get("/")
+async def root_v5():
+    """Root endpoint - shows API info including Code Doctor."""
+    return {
+        "name": "Gemini Code Doctor",
+        "version": __version__,
+        "status": "running",
+        "model": get_model_name(),
+        "reasoning_model": get_reasoning_model(),
+        "docs": "/docs",
+        "endpoints": {
+            "v5_code_doctor": {
+                "full_analysis": "/v5/analyze/full",
+                "full_stream": "/v5/analyze/full/stream",
+                "security_only": "/v5/analyze/security",
+                "evolution_only": "/v5/analyze/evolution",
+            },
+            "v4_verified": {
+                "analyze": "/v4/analyze/verified",
+                "stream": "/v4/analyze/verified/stream",
+                "async": "/v4/analyze/async",
+                "jobs": "/v4/jobs",
+            },
+            "v3_analysis": {
+                "analyze": "/v3/analyze",
+                "stream": "/v3/analyze/stream",
+            },
+            "v2_agent": {
+                "agent": "/v2/agent",
+                "stream": "/v2/agent/stream",
+            },
+            "diagnostics": {
+                "health": "/health",
+                "diagnostics": "/diagnostics",
+                "logs": "/logs",
+            },
+        },
+        "capabilities": [
+            "code_doctor",        # Full health check
+            "security_scan",      # Secret detection
+            "verified_analysis",  # Bug verification
+            "evolution_advisor",  # Roadmap generation
+            "marathon_agent",     # Long-running tasks
+            "streaming",          # SSE real-time updates
+        ],
+    }
 
 
 # ============================================================

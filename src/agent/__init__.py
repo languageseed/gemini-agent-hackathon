@@ -2,6 +2,11 @@
 Marathon Agent Module
 
 Minimal, powerful agent leveraging Gemini 3 native capabilities.
+
+Features:
+- Code Analysis with Verification (Vibe Engineering)
+- Security Scanning (Secret detection, container checks)
+- Evolution Advisor (Roadmap generation, tech debt analysis)
 """
 
 from .core import MarathonAgent, AgentConfig, AgentResult
@@ -15,6 +20,23 @@ from .verified_analysis import (
     Severity,
     Category,
     VerificationStatus,
+)
+from .security import (
+    SecretScanner,
+    SecurityFinding,
+    SecurityScanResult,
+    scan_codebase_for_secrets,
+    Severity as SecuritySeverity,
+    FindingCategory,
+    SecretType,
+)
+from .evolution import (
+    EvolutionAdvisor,
+    EvolutionReport,
+    EvolutionRecommendation,
+    EvolutionCategory,
+    Priority,
+    Effort,
 )
 
 __all__ = [
@@ -36,4 +58,19 @@ __all__ = [
     "Severity",
     "Category",
     "VerificationStatus",
+    # Security Scanning
+    "SecretScanner",
+    "SecurityFinding",
+    "SecurityScanResult",
+    "scan_codebase_for_secrets",
+    "SecuritySeverity",
+    "FindingCategory",
+    "SecretType",
+    # Evolution Advisor
+    "EvolutionAdvisor",
+    "EvolutionReport",
+    "EvolutionRecommendation",
+    "EvolutionCategory",
+    "Priority",
+    "Effort",
 ]
