@@ -1435,15 +1435,15 @@ Path filter: {request.path_filter or 'all files'}
         try:
             while True:
                 try:
-                    # Wait for event with timeout
-                    event = await asyncio.wait_for(event_queue.get(), timeout=120.0)
+                    # Short timeout for frequent heartbeats (Railway/Cloudflare close idle connections)
+                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
                     yield event.to_sse()
                     
                     # Stop on done or error
                     if event.type in (EventType.DONE, EventType.ERROR):
                         break
                 except asyncio.TimeoutError:
-                    # Send heartbeat to keep connection alive
+                    # Send heartbeat every 30s to keep connection alive
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
             if not agent_task.done():
@@ -1650,12 +1650,14 @@ async def analyze_repository_verified_stream(request: VerifiedAnalyzeRequest):
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=180.0)
+                    # Short timeout for frequent heartbeats (Railway/Cloudflare close idle connections)
+                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
                     yield event.to_sse()
                     
                     if event.type in (EventType.DONE, EventType.ERROR):
                         break
                 except asyncio.TimeoutError:
+                    # Send heartbeat every 30s to keep connection alive
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
             if not analysis_task.done():
@@ -2464,12 +2466,14 @@ async def code_doctor_full_stream(request: CodeDoctorRequest):
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=300.0)
+                    # Short timeout for frequent heartbeats (Railway/Cloudflare close idle connections)
+                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
                     yield event.to_sse()
                     
                     if event.type in (EventType.DONE, EventType.ERROR):
                         break
                 except asyncio.TimeoutError:
+                    # Send heartbeat every 30s to keep connection alive
                     yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
             if not analysis_task.done():
