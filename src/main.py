@@ -542,6 +542,38 @@ def record_request():
     _metrics["last_request"] = datetime.datetime.utcnow().isoformat()
 
 
+@app.get("/status")
+async def public_status():
+    """
+    Public status endpoint - no API key required.
+    Shows basic metrics for debugging without exposing sensitive data.
+    
+    Note: Railway has a 5-minute hard timeout on HTTP requests.
+    For long-running analyses, use the async API: POST /v4/analyze/async
+    """
+    import datetime
+    uptime = (datetime.datetime.utcnow() - _startup_time).total_seconds()
+    
+    return {
+        "status": "running",
+        "version": __version__,
+        "uptime_seconds": round(uptime),
+        "uptime_human": f"{int(uptime // 3600)}h {int((uptime % 3600) // 60)}m",
+        "metrics": {
+            "total_requests": _metrics["requests"]["total"],
+            "total_analyses": _metrics["analyses"]["total"],
+            "verified_issues": _metrics["analyses"]["verified"],
+            "errors": _metrics["requests"]["errors"],
+        },
+        "last_activity": _metrics["last_request"],
+        "last_error": _metrics["last_error"]["message"][:100] if _metrics["last_error"] else None,
+        "platform_limits": {
+            "note": "Railway has 5-minute HTTP timeout",
+            "recommendation": "Use async API for long analyses: POST /v4/analyze/async",
+        }
+    }
+
+
 @app.get("/diagnostics", dependencies=[Depends(verify_api_key)])
 async def diagnostics():
     """
