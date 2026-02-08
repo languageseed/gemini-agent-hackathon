@@ -42,17 +42,22 @@ def safe_truncate(content: str, limit: int = MAX_CONTENT_CHARS) -> str:
     if last_header > 0:
         # Truncate at the file boundary (before this file starts)
         truncated = content[:last_header]
+        chars_hidden = len(content) - len(truncated)
         logger.info("content_truncated_safely", 
                    original_chars=len(content),
                    truncated_chars=len(truncated),
                    files_after_limit="excluded")
+        truncated += f"\n\n[SYSTEM NOTE: Repository content was truncated at file boundary. {chars_hidden:,} characters ({chars_hidden // 1000}KB) of additional files were omitted. Analyze only what is shown above.]"
         return truncated
     
     # Fallback: no file headers found, truncate at limit
     logger.warning("content_truncated_hard", 
                   original_chars=len(content),
                   limit=limit)
-    return content[:limit]
+    truncated = content[:limit]
+    chars_hidden = len(content) - limit
+    truncated += f"\n\n[SYSTEM NOTE: Content was truncated. {chars_hidden:,} characters omitted. Analyze only what is shown above.]"
+    return truncated
 
 
 class Severity(str, Enum):
@@ -427,6 +432,18 @@ def validate_test_code(code: str) -> tuple[bool, str]:
         # Match "import forbidden" or "from forbidden"
         if re.search(rf'\b(import|from)\s+{forbidden}\b', code_lower):
             return False, f"Test uses forbidden import: {forbidden}"
+    
+    # Check for dynamic imports that bypass static regex (__import__, importlib)
+    dynamic_import_patterns = [
+        r'__import__\s*\(',
+        r'importlib\.import_module\s*\(',
+    ]
+    for pattern in dynamic_import_patterns:
+        if re.search(pattern, code_lower):
+            # Check if it's importing a forbidden module
+            for forbidden in FORBIDDEN_IMPORTS:
+                if forbidden in code_lower:
+                    return False, f"Test uses dynamic import of forbidden module: {forbidden}"
     
     # Check for file operations (likely to fail)
     file_patterns = [
