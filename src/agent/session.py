@@ -34,9 +34,10 @@ class Session:
 
 class SessionStore:
     """
-    Redis-backed session storage.
+    Redis-backed session storage with access control.
     
-    Falls back to in-memory storage if Redis is not available.
+    Sessions are scoped by owner_id (derived from API key hash) to prevent
+    unauthorized access. Falls back to in-memory storage if Redis is not available.
     """
     
     def __init__(self, redis_url: Optional[str] = None):
@@ -57,13 +58,26 @@ class SessionStore:
                 self._redis = None
         return self._redis
     
-    async def save(self, session: Session) -> None:
-        """Save session state."""
+    @staticmethod
+    def _hash_owner(api_key: str) -> str:
+        """Hash API key to create an owner scope (never store raw keys)."""
+        import hashlib
+        return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    
+    def _session_key(self, session_id: str, owner_id: str = "") -> str:
+        """Build storage key scoped to owner."""
+        if owner_id:
+            return f"session:{owner_id}:{session_id}"
+        return f"session:{session_id}"
+    
+    async def save(self, session: Session, owner_id: str = "") -> None:
+        """Save session state, scoped to owner."""
         session.updated_at = datetime.now().isoformat()
         
         # Serialize messages (Content objects) to JSON-compatible format
         data = {
             "id": session.id,
+            "owner_id": owner_id,
             "iteration": session.iteration,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
@@ -71,29 +85,28 @@ class SessionStore:
             "messages": self._serialize_messages(session.messages)
         }
         
+        key = self._session_key(session.id, owner_id)
+        
         redis = await self._get_redis()
         if redis:
             try:
-                await redis.set(
-                    f"session:{session.id}",
-                    json.dumps(data),
-                    ex=86400 * 7  # 7 days TTL
-                )
+                await redis.set(key, json.dumps(data), ex=86400 * 7)  # 7 days TTL
                 return
             except Exception as e:
                 logger.warning("redis_save_failed", error=str(e))
         
         # Fallback to memory
-        self._memory_store[session.id] = data
+        self._memory_store[key] = data
     
-    async def load(self, session_id: str) -> Optional[Session]:
-        """Load session state."""
+    async def load(self, session_id: str, owner_id: str = "") -> Optional[Session]:
+        """Load session state. Must match owner_id used during save."""
+        key = self._session_key(session_id, owner_id)
         redis = await self._get_redis()
         data = None
         
         if redis:
             try:
-                raw = await redis.get(f"session:{session_id}")
+                raw = await redis.get(key)
                 if raw:
                     data = json.loads(raw)
             except Exception as e:
@@ -101,9 +114,14 @@ class SessionStore:
         
         # Fallback to memory
         if data is None:
-            data = self._memory_store.get(session_id)
+            data = self._memory_store.get(key)
         
         if data is None:
+            return None
+        
+        # Verify owner matches (defense in depth)
+        if owner_id and data.get("owner_id") and data["owner_id"] != owner_id:
+            logger.warning("session_access_denied", session_id=session_id)
             return None
         
         return Session(
@@ -115,28 +133,34 @@ class SessionStore:
             metadata=data.get("metadata", {})
         )
     
-    async def delete(self, session_id: str) -> None:
-        """Delete session."""
+    async def delete(self, session_id: str, owner_id: str = "") -> None:
+        """Delete session. Must match owner_id."""
+        key = self._session_key(session_id, owner_id)
         redis = await self._get_redis()
         if redis:
             try:
-                await redis.delete(f"session:{session_id}")
+                await redis.delete(key)
             except Exception as e:
                 logger.warning("redis_delete_failed", error=str(e))
         
-        self._memory_store.pop(session_id, None)
+        self._memory_store.pop(key, None)
     
-    async def list_sessions(self, limit: int = 100) -> list[str]:
-        """List recent session IDs."""
+    async def list_sessions(self, owner_id: str = "", limit: int = 100) -> list[str]:
+        """List recent session IDs for an owner."""
         redis = await self._get_redis()
+        prefix = f"session:{owner_id}:" if owner_id else "session:"
+        
         if redis:
             try:
-                keys = await redis.keys("session:*")
-                return [k.decode().replace("session:", "") for k in keys[:limit]]
+                keys = await redis.keys(f"{prefix}*")
+                return [k.decode().split(":")[-1] for k in keys[:limit]]
             except Exception as e:
                 logger.warning("redis_list_failed", error=str(e))
         
-        return list(self._memory_store.keys())[:limit]
+        return [
+            k.split(":")[-1] for k in self._memory_store.keys()
+            if k.startswith(prefix)
+        ][:limit]
     
     def _serialize_messages(self, messages: list) -> list[dict]:
         """Convert Gemini Content objects to JSON-serializable dicts."""

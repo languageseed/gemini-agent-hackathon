@@ -94,23 +94,72 @@ Use this to analyze codebases, find bugs, suggest improvements, or generate docu
         "required": ["repo_url"]
     }
     
+    # Allowed GitHub hostnames (prevent SSRF)
+    ALLOWED_HOSTS = {"github.com", "www.github.com"}
+    
     async def execute(self, arguments: dict) -> ToolResult:
         repo_url = arguments.get("repo_url", "")
         branch = arguments.get("branch")
         path_filter = arguments.get("path_filter")
         
-        # Normalize URL
+        # Normalize URL - if no protocol, assume github.com
         if not repo_url.startswith("http"):
-            repo_url = f"https://github.com/{repo_url}"
+            # Handle "owner/repo" or "github.com/owner/repo" format
+            if repo_url.startswith("github.com/"):
+                repo_url = f"https://{repo_url}"
+            else:
+                repo_url = f"https://github.com/{repo_url}"
         
-        # Extract owner/repo
-        parts = repo_url.rstrip("/").split("/")
-        if len(parts) < 2:
-            return ToolResult(output="Invalid repository URL", success=False)
+        # ============================================================
+        # SECURITY: Validate URL to prevent SSRF attacks
+        # Only allow github.com URLs to prevent fetching internal resources
+        # ============================================================
+        from urllib.parse import urlparse
         
-        owner, repo = parts[-2], parts[-1]
+        try:
+            parsed = urlparse(repo_url)
+            
+            # Must be HTTPS only
+            if parsed.scheme != "https":
+                return ToolResult(
+                    output=f"Invalid URL scheme: {parsed.scheme}. Only HTTPS URLs allowed.",
+                    success=False
+                )
+            
+            # Validate hostname is github.com
+            hostname = parsed.hostname.lower() if parsed.hostname else ""
+            if hostname not in self.ALLOWED_HOSTS:
+                logger.warning("ssrf_blocked", hostname=hostname, url=repo_url[:100])
+                return ToolResult(
+                    output=f"Only GitHub repositories are supported. Got hostname: {hostname}",
+                    success=False
+                )
+            
+            # Prevent port override (e.g., github.com:8080)
+            if parsed.port is not None and parsed.port != 443:
+                return ToolResult(
+                    output="Custom ports are not allowed for security reasons.",
+                    success=False
+                )
+                
+        except Exception as e:
+            return ToolResult(output=f"Invalid URL format: {e}", success=False)
+        
+        # Extract owner/repo from validated path
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) < 2:
+            return ToolResult(output="Invalid repository URL: must be github.com/owner/repo", success=False)
+        
+        owner, repo = path_parts[0], path_parts[1]
         if repo.endswith(".git"):
             repo = repo[:-4]
+        
+        # Validate owner/repo format (alphanumeric, hyphens, underscores, dots)
+        import re
+        if not re.match(r'^[a-zA-Z0-9_.-]+$', owner) or not re.match(r'^[a-zA-Z0-9_.-]+$', repo):
+            return ToolResult(output="Invalid owner or repository name format.", success=False)
+        
+        logger.info("clone_repo_validated", owner=owner, repo=repo)
         
         try:
             context = await self._clone_and_process(owner, repo, branch, path_filter)

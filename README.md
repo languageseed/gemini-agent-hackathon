@@ -57,14 +57,41 @@ cd gemini-agent-hackathon
 
 # Setup
 cp env.example .env
-# Add GEMINI_API_KEY and E2B_API_KEY to .env
+# Add GOOGLE_API_KEY and E2B_API_KEY to .env
 
 # Install
 pip install -r requirements.txt
 
 # Run
-uvicorn src.main:app --reload
+./scripts/run_local.sh
+# or: uvicorn src.main:app --reload
 ```
+
+### Local Testing (Before Deploying!)
+
+Run the analyzer locally on your own code before pushing to production:
+
+```bash
+# Analyze the src/ directory
+python scripts/analyze_local.py
+
+# Quick mode (no E2B verification - faster)
+python scripts/analyze_local.py --quick
+
+# Focus on security issues
+python scripts/analyze_local.py --focus security
+
+# Analyze a specific path
+python scripts/analyze_local.py --path agent/
+
+# Test API endpoints locally
+python scripts/test_endpoints.py
+
+# Test production endpoints
+python scripts/test_endpoints.py --prod
+```
+
+This catches bugs before they hit Railway/Vercel!
 
 ## API Endpoints
 

@@ -116,6 +116,7 @@ class MarathonAgent:
         self,
         task: str,
         session_id: Optional[str] = None,
+        owner_id: str = "",
         on_event: Optional[Callable[[StreamEvent], None]] = None,
     ) -> AgentResult:
         """
@@ -124,6 +125,7 @@ class MarathonAgent:
         Args:
             task: The task to complete
             session_id: Optional session ID for persistence/resume
+            owner_id: Owner scope for session access control (hash of API key)
             on_event: Optional callback for streaming events
             
         Returns:
@@ -134,10 +136,10 @@ class MarathonAgent:
             Tool, FunctionDeclaration
         )
         
-        # Load or create session
+        # Load or create session (scoped by owner_id)
         session = None
         if self.sessions and session_id:
-            session = await self.sessions.load(session_id)
+            session = await self.sessions.load(session_id, owner_id=owner_id)
         
         if session is None:
             session = Session(id=session_id)
@@ -228,10 +230,10 @@ class MarathonAgent:
                 if not function_calls:
                     final_text = response.text or "".join(text_parts)
                     
-                    # Save session state
+                    # Save session state (scoped by owner)
                     session.messages = messages
                     if self.sessions:
-                        await self.sessions.save(session)
+                        await self.sessions.save(session, owner_id=owner_id)
                     
                     if on_event:
                         on_event(StreamEvent(
@@ -303,7 +305,7 @@ class MarathonAgent:
                 session.messages = messages
                 session.iteration = iterations
                 if self.sessions:
-                    await self.sessions.save(session)
+                    await self.sessions.save(session, owner_id=owner_id)
             
             # Limit reached (time or iterations)
             elapsed = asyncio.get_event_loop().time() - start_time

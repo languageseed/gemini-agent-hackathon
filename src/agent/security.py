@@ -334,12 +334,20 @@ class SecretScanner:
             for p in self.patterns
         ]
     
+    # Max content size per file to prevent ReDoS on large files
+    MAX_SCAN_SIZE = 500_000  # 500KB per file
+    
     def scan_content(self, content: str, file_path: str = "unknown") -> list[SecurityFinding]:
         """Scan text content for secrets."""
         findings: list[SecurityFinding] = []
         
         if not content:
             return findings
+        
+        # Truncate oversized files to prevent ReDoS
+        if len(content) > self.MAX_SCAN_SIZE:
+            logger.warning("scan_truncated", file=file_path, size=len(content))
+            content = content[:self.MAX_SCAN_SIZE]
         
         lines = content.split('\n')
         
@@ -442,15 +450,10 @@ class SecretScanner:
         return unique
 
 
-def scan_codebase_for_secrets(repo_content: str) -> list[SecurityFinding]:
+def _scan_codebase_sync(repo_content: str) -> list[SecurityFinding]:
     """
-    Scan repository content for exposed secrets.
-    
-    Args:
-        repo_content: Full repository content (from clone_repo tool)
-        
-    Returns:
-        List of security findings
+    Synchronous scan - runs in a thread to avoid blocking the event loop.
+    CPU-bound regex operations should not run on the main async thread.
     """
     scanner = SecretScanner()
     all_findings = []
@@ -467,6 +470,24 @@ def scan_codebase_for_secrets(repo_content: str) -> list[SecurityFinding]:
         all_findings.extend(findings)
     
     return all_findings
+
+
+def scan_codebase_for_secrets(repo_content: str) -> list[SecurityFinding]:
+    """
+    Scan repository content for exposed secrets.
+    
+    Runs synchronously (call from sync context or use async version).
+    """
+    return _scan_codebase_sync(repo_content)
+
+
+async def scan_codebase_for_secrets_async(repo_content: str) -> list[SecurityFinding]:
+    """
+    Async-safe version: runs CPU-bound regex scanning in a thread pool
+    to avoid blocking the event loop.
+    """
+    import asyncio
+    return await asyncio.to_thread(_scan_codebase_sync, repo_content)
 
 
 @dataclass

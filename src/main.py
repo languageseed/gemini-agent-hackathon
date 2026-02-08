@@ -48,7 +48,7 @@ from .agent.tools import create_default_tools
 # ============================================================
 # VERSION CONSTANT
 # ============================================================
-__version__ = "0.7.2"
+__version__ = "0.8.0"
 
 # ============================================================
 # SECURITY - API Key Protection
@@ -96,6 +96,16 @@ async def verify_api_key(request: Request):
             status_code=403,
             detail="Invalid API key"
         )
+
+
+def get_owner_id(request: Request) -> str:
+    """Derive owner_id from API key for session scoping. Returns hash, never raw key."""
+    import hashlib
+    key = request.headers.get("X-API-Key", "")
+    if not key:
+        return "anonymous"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
 
 # Configure logging
 structlog.configure(
@@ -400,8 +410,10 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
     elif name == "calculate":
         expr = arguments.get("expression", "")
         try:
-            # Safe evaluation (only math)
-            result = eval(expr, {"__builtins__": {}}, {})
+            # Use AST-based safe calculator (no eval)
+            from agent.tools import CalculateTool
+            calc = CalculateTool()
+            result = calc._safe_eval(expr)
             return f"Result: {result}"
         except Exception as e:
             return f"Error: {e}"
@@ -1048,7 +1060,7 @@ class MarathonAgentResponse(BaseModel):
 
 
 @app.post("/v2/agent", response_model=MarathonAgentResponse, dependencies=[Depends(verify_api_key)])
-async def marathon_agent(request: MarathonAgentRequest):
+async def marathon_agent(request: MarathonAgentRequest, raw_request: Request):
     """
     Run the Marathon Agent.
     
@@ -1071,6 +1083,7 @@ async def marathon_agent(request: MarathonAgentRequest):
         result = await agent.run(
             task=request.task,
             session_id=request.session_id,
+            owner_id=get_owner_id(raw_request),
         )
         
         return MarathonAgentResponse(
@@ -1088,7 +1101,7 @@ async def marathon_agent(request: MarathonAgentRequest):
 
 
 @app.post("/v2/agent/stream", dependencies=[Depends(verify_api_key)])
-async def marathon_agent_stream(request: MarathonAgentRequest):
+async def marathon_agent_stream(request: MarathonAgentRequest, raw_request: Request):
     """
     Run the Marathon Agent with SSE streaming.
     
@@ -1117,6 +1130,7 @@ async def marathon_agent_stream(request: MarathonAgentRequest):
         result = await agent.run(
             task=request.task,
             session_id=request.session_id,
+            owner_id=get_owner_id(raw_request),
             on_event=collector,
         )
         
@@ -1267,7 +1281,7 @@ class AnalyzeRepoResponse(BaseModel):
 
 
 @app.post("/v3/analyze", response_model=AnalyzeRepoResponse, dependencies=[Depends(verify_api_key)])
-async def analyze_repository(request: AnalyzeRepoRequest):
+async def analyze_repository(request: AnalyzeRepoRequest, raw_request: Request):
     """
     Analyze a GitHub repository.
     
@@ -1318,6 +1332,7 @@ Path filter: {request.path_filter or 'all files'}
         result = await agent.run(
             task=task,
             session_id=request.session_id,
+            owner_id=get_owner_id(raw_request),
         )
         
         # Extract metrics from the result
@@ -1351,7 +1366,7 @@ Path filter: {request.path_filter or 'all files'}
 
 
 @app.post("/v3/analyze/stream", dependencies=[Depends(verify_api_key)])
-async def analyze_repository_stream(request: AnalyzeRepoRequest):
+async def analyze_repository_stream(request: AnalyzeRepoRequest, raw_request: Request):
     """
     Analyze a GitHub repository with real-time SSE streaming.
     
@@ -2141,7 +2156,7 @@ async def cancel_job(job_id: str):
 from .agent.security import (
     SecretScanner,
     SecurityFinding,
-    scan_codebase_for_secrets,
+    scan_codebase_for_secrets_async,
     Severity as SecuritySeverity,
 )
 from .agent.evolution import (
@@ -2247,7 +2262,7 @@ async def code_doctor_full(request: CodeDoctorRequest):
     if request.run_security_scan:
         add_log("info", "code_doctor_security_scan", repo_url=request.repo_url)
         
-        findings = scan_codebase_for_secrets(repo_content)
+        findings = await scan_codebase_for_secrets_async(repo_content)
         security_findings = [f.to_dict() for f in findings]
         
         security_summary = {
@@ -2462,7 +2477,7 @@ async def code_doctor_full_stream(request: CodeDoctorRequest):
                     data={"phase": "security", "message": "Scanning for secrets and misconfigurations..."}
                 ))
                 
-                findings = scan_codebase_for_secrets(repo_content)
+                findings = await scan_codebase_for_secrets_async(repo_content)
                 security_findings = [f.to_dict() for f in findings]
                 
                 for finding in findings:
@@ -2639,7 +2654,7 @@ async def security_scan_only(repo_url: str, branch: Optional[str] = None):
     if not clone_result.success:
         raise HTTPException(status_code=400, detail=f"Failed to clone: {clone_result.output}")
     
-    findings = scan_codebase_for_secrets(clone_result.output)
+    findings = await scan_codebase_for_secrets_async(clone_result.output)
     
     return {
         "repo_url": repo_url,

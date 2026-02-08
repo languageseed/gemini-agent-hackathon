@@ -84,7 +84,7 @@ class GetCurrentTimeTool(Tool):
 
 
 class CalculateTool(Tool):
-    """Perform mathematical calculations."""
+    """Perform mathematical calculations using safe AST-based evaluation."""
     
     name = "calculate"
     description = "Perform a mathematical calculation. Supports basic math operations."
@@ -99,44 +99,151 @@ class CalculateTool(Tool):
         "required": ["expression"]
     }
     
-    # Explicit whitelist of safe math functions (no __import__, exec, eval, etc.)
-    SAFE_MATH_FUNCTIONS = {
-        "abs", "round", "min", "max", "sum", "pow",
+    # Whitelisted function names that can be called
+    SAFE_FUNCTIONS = {
+        "abs", "round", "min", "max", "pow",
         "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
         "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
         "sqrt", "log", "log10", "log2", "exp", "expm1", "log1p",
         "floor", "ceil", "trunc", "fabs", "factorial", "gcd",
-        "degrees", "radians", "hypot", "isfinite", "isinf", "isnan",
-        "pi", "e", "tau", "inf", "nan",
+        "degrees", "radians", "hypot",
+    }
+    
+    # Safe constants
+    SAFE_CONSTANTS = {
+        "pi": 3.141592653589793,
+        "e": 2.718281828459045,
+        "tau": 6.283185307179586,
     }
     
     async def execute(self, arguments: dict) -> ToolResult:
         expr = arguments.get("expression", "")
         try:
-            import math
-            
-            # Build safe namespace with explicit whitelist only
-            safe_globals = {"__builtins__": None}  # Explicitly disable builtins
-            
-            # Add only whitelisted math functions
-            for name in self.SAFE_MATH_FUNCTIONS:
-                if hasattr(math, name):
-                    safe_globals[name] = getattr(math, name)
-            
-            # Add safe builtins for basic operations
-            safe_globals["abs"] = abs
-            safe_globals["round"] = round
-            safe_globals["min"] = min
-            safe_globals["max"] = max
-            safe_globals["sum"] = sum
-            safe_globals["pow"] = pow
-            safe_globals["True"] = True
-            safe_globals["False"] = False
-            
-            result = eval(expr, safe_globals, {})
+            result = self._safe_eval(expr)
             return ToolResult(output=f"{expr} = {result}")
         except Exception as e:
             return ToolResult(output=f"Error evaluating '{expr}': {e}", success=False)
+    
+    def _safe_eval(self, expr: str) -> float:
+        """
+        Safely evaluate a mathematical expression using AST parsing.
+        
+        This does NOT use eval(). Instead, it parses the expression into an AST
+        and only allows safe operations (numbers, arithmetic, whitelisted functions).
+        """
+        import ast
+        import math
+        import operator
+        
+        # Allowed binary operators
+        OPERATORS = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.FloorDiv: operator.floordiv,
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+        }
+        
+        # Allowed unary operators
+        UNARY_OPS = {
+            ast.UAdd: operator.pos,
+            ast.USub: operator.neg,
+        }
+        
+        # Allowed comparison operators
+        COMPARE_OPS = {
+            ast.Eq: operator.eq,
+            ast.NotEq: operator.ne,
+            ast.Lt: operator.lt,
+            ast.LtE: operator.le,
+            ast.Gt: operator.gt,
+            ast.GtE: operator.ge,
+        }
+        
+        def _eval_node(node):
+            """Recursively evaluate an AST node."""
+            if isinstance(node, ast.Expression):
+                return _eval_node(node.body)
+            
+            elif isinstance(node, ast.Constant):
+                # Python 3.8+ uses ast.Constant for numbers
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                raise ValueError(f"Unsupported constant type: {type(node.value)}")
+            
+            elif isinstance(node, ast.Num):
+                # Python 3.7 compatibility
+                return node.n
+            
+            elif isinstance(node, ast.BinOp):
+                op_type = type(node.op)
+                if op_type not in OPERATORS:
+                    raise ValueError(f"Unsupported operator: {op_type.__name__}")
+                left = _eval_node(node.left)
+                right = _eval_node(node.right)
+                return OPERATORS[op_type](left, right)
+            
+            elif isinstance(node, ast.UnaryOp):
+                op_type = type(node.op)
+                if op_type not in UNARY_OPS:
+                    raise ValueError(f"Unsupported unary operator: {op_type.__name__}")
+                operand = _eval_node(node.operand)
+                return UNARY_OPS[op_type](operand)
+            
+            elif isinstance(node, ast.Compare):
+                # Handle comparisons like 5 > 3
+                left = _eval_node(node.left)
+                for op, comparator in zip(node.ops, node.comparators):
+                    op_type = type(op)
+                    if op_type not in COMPARE_OPS:
+                        raise ValueError(f"Unsupported comparison: {op_type.__name__}")
+                    right = _eval_node(comparator)
+                    if not COMPARE_OPS[op_type](left, right):
+                        return False
+                    left = right
+                return True
+            
+            elif isinstance(node, ast.Call):
+                # Function calls - only allow whitelisted functions
+                if not isinstance(node.func, ast.Name):
+                    raise ValueError("Only simple function calls allowed")
+                
+                func_name = node.func.id
+                if func_name not in self.SAFE_FUNCTIONS:
+                    raise ValueError(f"Function not allowed: {func_name}")
+                
+                # Get the function from math module
+                if not hasattr(math, func_name):
+                    raise ValueError(f"Unknown function: {func_name}")
+                
+                func = getattr(math, func_name)
+                args = [_eval_node(arg) for arg in node.args]
+                return func(*args)
+            
+            elif isinstance(node, ast.Name):
+                # Variable names - only allow constants
+                name = node.id
+                if name in self.SAFE_CONSTANTS:
+                    return self.SAFE_CONSTANTS[name]
+                raise ValueError(f"Unknown variable: {name}")
+            
+            elif isinstance(node, ast.Tuple):
+                # Tuples for functions like min(1, 2, 3)
+                return tuple(_eval_node(elt) for elt in node.elts)
+            
+            else:
+                raise ValueError(f"Unsupported expression type: {type(node).__name__}")
+        
+        # Parse the expression
+        try:
+            tree = ast.parse(expr, mode='eval')
+        except SyntaxError as e:
+            raise ValueError(f"Invalid expression syntax: {e}")
+        
+        # Evaluate the AST
+        return _eval_node(tree)
 
 
 # WebSearchTool removed - was a stub. Add real implementation when needed.
@@ -321,11 +428,9 @@ async def execute_code_in_sandbox(code: str, timeout: int = 30) -> tuple[bool, s
         except Exception as e:
             logger.warning("e2b_fallback", error=str(e))
     
-    # Local fallback (development only)
-    if os.environ.get("ALLOW_LOCAL_EXEC", "false").lower() == "true":
-        return await _execute_local(code, timeout)
-    
-    return False, "E2B_API_KEY not set and local execution disabled"
+    # No local fallback - E2B sandbox is the only supported execution environment.
+    # Local exec with raw exec() was removed for security (arbitrary code execution).
+    return False, "E2B_API_KEY not set. Code execution requires E2B sandbox."
 
 
 async def execute_verification_test(test_code: str, timeout: int = 30) -> VerificationResult:
@@ -345,28 +450,6 @@ async def execute_verification_test(test_code: str, timeout: int = 30) -> Verifi
         error_info = output.split("ERROR:")[-1].strip()
     
     return classify_test_result(success, output, error_info)
-
-
-async def _execute_local(code: str, timeout: int) -> tuple[bool, str]:
-    """Local execution fallback - only for development."""
-    import io
-    import sys
-    from contextlib import redirect_stdout, redirect_stderr
-    
-    stdout_capture = io.StringIO()
-    stderr_capture = io.StringIO()
-    
-    try:
-        namespace = {"__builtins__": __builtins__}
-        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            exec(code, namespace)
-        
-        stdout = stdout_capture.getvalue()
-        stderr = stderr_capture.getvalue()
-        return True, stdout + (f"\nSTDERR: {stderr}" if stderr else "") or "Success"
-        
-    except Exception as e:
-        return False, f"Error: {type(e).__name__}: {str(e)}"
 
 
 class ExecuteCodeTool(Tool):
@@ -396,17 +479,44 @@ The sandbox has numpy, pandas, matplotlib, requests pre-installed."""
         "required": ["code"]
     }
     
+    # Max code size to prevent abuse (50KB is generous for any reasonable code)
+    MAX_CODE_SIZE = 50_000
+    
     async def execute(self, arguments: dict) -> ToolResult:
         code = arguments.get("code", "")
         timeout = min(arguments.get("timeout", 30), 300)
+        
+        # Enforce code size limit
+        if len(code) > self.MAX_CODE_SIZE:
+            return ToolResult(
+                output=f"Code too large: {len(code)} chars (max {self.MAX_CODE_SIZE})",
+                success=False
+            )
         
         success, output = await execute_code_in_sandbox(code, timeout)
         return ToolResult(output=output, success=success)
 
 
-# Sandbox directory for file operations
+# ============================================================
+# FILE TOOLS - Disabled in production
+# ============================================================
+# File tools are disabled by default because code execution happens in
+# E2B sandboxes (remote), while file tools would operate on the host
+# filesystem. This mismatch creates a security risk: the agent could
+# write arbitrary files to the host while thinking it's writing to
+# the sandbox. Enable only for local development with ENABLE_FILE_TOOLS=true.
+
 import tempfile
+
+# Max file write size (prevent disk exhaustion)
+MAX_FILE_WRITE_SIZE = 100_000  # 100KB
+
 SANDBOX_DIR = os.path.join(tempfile.gettempdir(), "gemini-agent-sandbox")
+
+
+def _file_tools_enabled() -> bool:
+    """Check if file tools are explicitly enabled (opt-in, not opt-out)."""
+    return os.environ.get("ENABLE_FILE_TOOLS", "false").lower() == "true"
 
 
 def _get_sandboxed_path(path: str) -> str:
@@ -423,13 +533,13 @@ def _get_sandboxed_path(path: str) -> str:
     
     # Verify it's still within sandbox (prevent ../ attacks)
     if not os.path.abspath(full_path).startswith(os.path.abspath(SANDBOX_DIR)):
-        raise ValueError(f"Path escapes sandbox: {path}")
+        raise ValueError("Path escapes sandbox")
     
     return full_path
 
 
 class ReadFileTool(Tool):
-    """Read file contents from sandbox."""
+    """Read file contents from sandbox. Disabled by default in production."""
     
     name = "read_file"
     description = "Read the contents of a file (sandboxed to temp directory)"
@@ -445,28 +555,29 @@ class ReadFileTool(Tool):
     }
     
     async def execute(self, arguments: dict) -> ToolResult:
-        path = arguments.get("path", "")
-        
-        # Check if file tools are enabled
-        if os.environ.get("DISABLE_FILE_TOOLS", "false").lower() == "true":
+        # File tools are disabled by default (opt-in only)
+        if not _file_tools_enabled():
             return ToolResult(
-                output="File tools are disabled in this environment",
+                output="File tools are disabled. Code execution uses E2B sandbox.",
                 success=False
             )
         
+        path = arguments.get("path", "")
         try:
             safe_path = _get_sandboxed_path(path)
             with open(safe_path, 'r') as f:
                 content = f.read()
             return ToolResult(output=content[:10000])  # Limit size
-        except ValueError as e:
-            return ToolResult(output=f"Security error: {e}", success=False)
-        except Exception as e:
-            return ToolResult(output=f"Error reading file: {e}", success=False)
+        except ValueError:
+            return ToolResult(output="Security error: path not allowed", success=False)
+        except FileNotFoundError:
+            return ToolResult(output="File not found", success=False)
+        except Exception:
+            return ToolResult(output="Error reading file", success=False)
 
 
 class WriteFileTool(Tool):
-    """Write content to a file in sandbox."""
+    """Write content to a file in sandbox. Disabled by default in production."""
     
     name = "write_file"
     description = "Write content to a file (sandboxed to temp directory)"
@@ -486,13 +597,20 @@ class WriteFileTool(Tool):
     }
     
     async def execute(self, arguments: dict) -> ToolResult:
+        # File tools are disabled by default (opt-in only)
+        if not _file_tools_enabled():
+            return ToolResult(
+                output="File tools are disabled. Code execution uses E2B sandbox.",
+                success=False
+            )
+        
         path = arguments.get("path", "")
         content = arguments.get("content", "")
         
-        # Check if file tools are enabled
-        if os.environ.get("DISABLE_FILE_TOOLS", "false").lower() == "true":
+        # Enforce write size limit to prevent disk exhaustion
+        if len(content) > MAX_FILE_WRITE_SIZE:
             return ToolResult(
-                output="File tools are disabled in this environment",
+                output=f"Content too large: {len(content)} bytes (max {MAX_FILE_WRITE_SIZE})",
                 success=False
             )
         
@@ -503,10 +621,10 @@ class WriteFileTool(Tool):
             with open(safe_path, 'w') as f:
                 f.write(content)
             return ToolResult(output=f"Successfully wrote {len(content)} bytes to sandbox/{path}")
-        except ValueError as e:
-            return ToolResult(output=f"Security error: {e}", success=False)
-        except Exception as e:
-            return ToolResult(output=f"Error writing file: {e}", success=False)
+        except ValueError:
+            return ToolResult(output="Security error: path not allowed", success=False)
+        except Exception:
+            return ToolResult(output="Error writing file", success=False)
 
 
 # ============================================================
